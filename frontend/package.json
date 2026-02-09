@@ -4,6 +4,7 @@
   "description": "POS System Frontend",
   "private": true,
   "dependencies": {
+    "appwrite": "^22.0.0",
     "axios": "^1.3.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

@@ -13,6 +13,7 @@ pnpm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+_ref_login/
 
 # Expo / React Native
 .expo/

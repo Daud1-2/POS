@@ -63,6 +63,10 @@ Build a cloud POS that works online and offline, starting with cashier flow. Sta
 3. Build cashier UI in web
 4. Add admin roles and dashboards
 
+## Appwrite User Creation
+- Create users in Appwrite Console: `Users` → `Create User`
+- Use those credentials to sign in on the login page
+
 ## Notes
 - Offline sync requires an event queue on client and idempotent server endpoints.
 - Credit payments should track customer balance if needed.

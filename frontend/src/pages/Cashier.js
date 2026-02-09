@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../services/api';
+import { account } from '../services/appwrite';
 
 const CASHIER_ID = 1;
 
@@ -10,8 +12,19 @@ function Cashier() {
   const [cart, setCart] = useState([]);
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [status, setStatus] = useState('');
+  const [authReady, setAuthReady] = useState(false);
+  const [authed, setAuthed] = useState(false);
 
   useEffect(() => {
+    account
+      .get()
+      .then(() => setAuthed(true))
+      .catch(() => setAuthed(false))
+      .finally(() => setAuthReady(true));
+  }, []);
+
+  useEffect(() => {
+    if (!authed) return;
     api
       .get('/products')
       .then((res) => {
@@ -20,7 +33,7 @@ function Cashier() {
       .catch(() => {
         setStatus('Failed to load products');
       });
-  }, []);
+  }, [authed]);
 
   const cartTotal = useMemo(
     () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
@@ -79,7 +92,12 @@ function Cashier() {
   };
 
   return (
-    <div style={{ padding: 24, display: 'grid', gap: 24, gridTemplateColumns: '2fr 1fr' }}>
+    <div style={{ padding: 24, display: 'grid', gap: 24, gridTemplateColumns: '2fr 1fr', background: '#fff', minHeight: '100vh', color: '#0f172a' }}>
+      {authReady && !authed && (
+        <div style={{ gridColumn: '1 / -1', padding: 12, background: '#fff3cd', borderRadius: 8 }}>
+          You are not signed in. Please <Link to="/login">sign in</Link> to use the cashier.
+        </div>
+      )}
       <section>
         <h2>Products</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12 }}>
