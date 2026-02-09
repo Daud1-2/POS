@@ -1,0 +1,8 @@
+{
+  "short_name": "POS",
+  "name": "POS Web",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#0f172a",
+  "background_color": "#ffffff"
+}
