@@ -41,68 +41,71 @@ const MONTH_NAMES = [
 const toNumber = (value) => Number(value || 0);
 const formatCurrency = (value) => `PKR ${toNumber(value).toLocaleString()}`;
 const pad = (value) => String(value).padStart(2, '0');
+
+const toPaymentLabel = (paymentMethod) => {
+  if (paymentMethod === 'cash') return 'COD';
+  if (paymentMethod === 'card') return 'CARD';
+  return 'ONLINE';
+};
+
 const PAYMENT_COLORS = {
   COD: '#e79ab2',
   CARD: '#9fbde3',
+  ONLINE: '#9ad7a7',
 };
+
 const DELIVERY_COLORS = {
   Delivery: '#e79ab2',
   Pickup: '#9fbde3',
 };
 
-const toLocalDateKey = (value) => {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-};
-
-const buildThirtyDaySeries = (rows, valueKeys) => {
+const buildSeriesByRange = (range, rows, valueKeys) => {
   const grouped = new Map();
 
   rows.forEach((row) => {
-    const key = toLocalDateKey(row.bucket);
-    if (!key) return;
-    const existing = grouped.get(key) || {};
+    const date = new Date(row.bucket);
+    if (Number.isNaN(date.getTime())) return;
+
+    const key = range === 'day' ? date.getHours() : date.getDate();
+    const current = grouped.get(key) || {};
     valueKeys.forEach((field) => {
-      existing[field] = toNumber(existing[field]) + toNumber(row[field]);
+      current[field] = toNumber(current[field]) + toNumber(row[field]);
     });
-    grouped.set(key, existing);
+    grouped.set(key, current);
   });
 
-  const points = [];
-  for (let i = 29; i >= 0; i -= 1) {
-    const date = new Date();
-    date.setHours(0, 0, 0, 0);
-    date.setDate(date.getDate() - i);
-    const key = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-    const source = grouped.get(key) || {};
-    const point = {
-      key,
-      label: String(date.getDate()),
-    };
-    valueKeys.forEach((field) => {
-      point[field] = toNumber(source[field]);
-    });
-    points.push(point);
+  if (range === 'day') {
+    const points = [];
+    for (let hour = 0; hour < 24; hour += 1) {
+      const source = grouped.get(hour) || {};
+      points.push({
+        key: `h-${hour}`,
+        label: `${pad(hour)}:00`,
+        prettyLabel: `Today ${pad(hour)}:00`,
+        ...Object.fromEntries(valueKeys.map((field) => [field, toNumber(source[field])])),
+      });
+    }
+    return points;
   }
 
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const points = [];
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const source = grouped.get(day) || {};
+    const date = new Date(year, month, day);
+    const weekday = date.toLocaleDateString('en-US', { weekday: 'long' });
+    points.push({
+      key: `d-${day}`,
+      label: String(day),
+      prettyLabel: `${weekday} ${day} ${MONTH_NAMES[month]}, ${year}`,
+      ...Object.fromEntries(valueKeys.map((field) => [field, toNumber(source[field])])),
+    });
+  }
   return points;
-};
-
-const dayWithSuffix = (day) => {
-  if (day >= 11 && day <= 13) return `${day}th`;
-  const last = day % 10;
-  if (last === 1) return `${day}st`;
-  if (last === 2) return `${day}nd`;
-  if (last === 3) return `${day}rd`;
-  return `${day}th`;
-};
-
-const formatPrettyDate = (key) => {
-  const date = new Date(`${key}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return key;
-  const weekday = date.toLocaleDateString('en-US', { weekday: 'long' });
-  return `${weekday} ${dayWithSuffix(date.getDate())} ${MONTH_NAMES[date.getMonth()]}, ${date.getFullYear()}`;
 };
 
 const OrderTrendTooltip = ({ active, payload }) => {
@@ -116,10 +119,8 @@ const OrderTrendTooltip = ({ active, payload }) => {
   const webSales = toNumber(point.web_sales_total);
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-xl min-w-[210px]">
-      <div className="text-[11px] text-slate-700 font-semibold mb-2">
-        {formatPrettyDate(point.key)}
-      </div>
+    <div className="bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-xl min-w-[220px]">
+      <div className="text-[11px] text-slate-700 font-semibold mb-2">{point.prettyLabel}</div>
       <div className="space-y-1">
         <div className="flex items-center justify-between text-[11px]">
           <div className="flex items-center gap-2 text-slate-700">
@@ -145,14 +146,11 @@ const RejectedTrendTooltip = ({ active, payload }) => {
   const point = payload[0]?.payload;
   if (!point) return null;
 
-  const totalOrders = toNumber(point.rejected_count);
-  const lossOfBusiness = toNumber(point.loss_of_business);
-
   return (
     <div className="bg-slate-900 text-white rounded-md px-3 py-2 shadow-xl text-[11px]">
-      <span className="font-semibold">Total Orders:</span> {totalOrders}
+      <span className="font-semibold">Total Orders:</span> {toNumber(point.rejected_count)}
       <span className="mx-1">|</span>
-      <span className="font-semibold">Loss of Business:</span> {formatCurrency(lossOfBusiness)}
+      <span className="font-semibold">Loss of Business:</span> {formatCurrency(point.loss_of_business)}
     </div>
   );
 };
@@ -181,9 +179,28 @@ const renderInsidePieLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, perc
   );
 };
 
+const RangeToggle = ({ range, onChange }) => (
+  <div className="inline-flex rounded-md border border-slate-200 overflow-hidden text-[10px]">
+    <button
+      type="button"
+      onClick={() => onChange('day')}
+      className={`px-2 py-1 ${range === 'day' ? 'bg-brandYellow/20 text-ink' : 'bg-white text-muted'}`}
+    >
+      Day
+    </button>
+    <button
+      type="button"
+      onClick={() => onChange('month')}
+      className={`px-2 py-1 border-l border-slate-200 ${range === 'month' ? 'bg-brandYellow/20 text-ink' : 'bg-white text-muted'}`}
+    >
+      Month
+    </button>
+  </div>
+);
+
 function Dashboard() {
-  const [summaryToday, setSummaryToday] = useState(null);
-  const [summary30d, setSummary30d] = useState(null);
+  const [range, setRange] = useState('day');
+  const [summary, setSummary] = useState(null);
   const [salesTrend, setSalesTrend] = useState([]);
   const [rejectedTrend, setRejectedTrend] = useState([]);
   const [topProducts, setTopProducts] = useState([]);
@@ -201,17 +218,15 @@ function Dashboard() {
 
     const fetchFast = async () => {
       try {
-        const [today, thirtyDays, top, payment, channels] = await Promise.all([
-          getSummary('today'),
-          getSummary('30d'),
-          getTopProducts('30d', 10),
-          getPaymentType('30d'),
-          getChannelContribution('30d'),
+        const [summaryResponse, top, payment, channels] = await Promise.all([
+          getSummary(range),
+          getTopProducts(range, 10),
+          getPaymentType(range),
+          getChannelContribution(range),
         ]);
 
         if (!mounted) return;
-        setSummaryToday(today);
-        setSummary30d(thirtyDays);
+        setSummary(summaryResponse);
         setTopProducts(top);
         setPaymentType(payment);
         setChannelContribution(channels);
@@ -228,8 +243,8 @@ function Dashboard() {
     const fetchSlow = async () => {
       try {
         const [sales, rejected] = await Promise.all([
-          getSalesTrend('30d'),
-          getRejectedTrend('30d'),
+          getSalesTrend(range),
+          getRejectedTrend(range),
         ]);
 
         if (!mounted) return;
@@ -255,35 +270,34 @@ function Dashboard() {
       clearInterval(fastTimer);
       clearInterval(slowTimer);
     };
-  }, []);
+  }, [range]);
 
+  const rangeCaption = range === 'day' ? 'Today' : 'This Month';
   const stats = [
-    { label: 'Total Orders', value: summaryToday?.total_orders ?? 0, caption: 'Today' },
-    { label: 'Total Sales', value: formatCurrency(summaryToday?.total_sales), caption: 'Today' },
-    { label: 'Total Orders', value: summary30d?.total_orders ?? 0, caption: 'Last 30 Days' },
-    { label: 'Total Sales', value: formatCurrency(summary30d?.total_sales), caption: 'Last 30 Days' },
+    { label: 'Total Orders', value: summary?.total_orders ?? 0, caption: rangeCaption },
+    { label: 'Total Sales', value: formatCurrency(summary?.total_sales), caption: rangeCaption },
     {
       label: 'Order (New)',
-      value: summary30d?.new_vs_old ? `${summary30d.new_vs_old.new_pct}%` : '-',
-      caption: 'Last 30 Days',
+      value: summary?.new_vs_old ? `${summary.new_vs_old.new_pct}%` : '-',
+      caption: rangeCaption,
     },
     {
       label: 'Order (Old)',
-      value: summary30d?.new_vs_old ? `${summary30d.new_vs_old.old_pct}%` : '-',
-      caption: 'Last 30 Days',
+      value: summary?.new_vs_old ? `${summary.new_vs_old.old_pct}%` : '-',
+      caption: rangeCaption,
     },
-    { label: 'Average Order', value: formatCurrency(summary30d?.avg_order_value), caption: 'Last 30 Days' },
-    { label: 'Highest Order', value: formatCurrency(summary30d?.highest_order_value), caption: 'Last 30 Days' },
+    { label: 'Average Order', value: formatCurrency(summary?.avg_order_value), caption: rangeCaption },
+    { label: 'Highest Order', value: formatCurrency(summary?.highest_order_value), caption: rangeCaption },
   ];
 
   const salesSeries = useMemo(
-    () => buildThirtyDaySeries(salesTrend, ['order_count', 'sales_total', 'web_order_count', 'web_sales_total']),
-    [salesTrend]
+    () => buildSeriesByRange(range, salesTrend, ['order_count', 'sales_total', 'web_order_count', 'web_sales_total']),
+    [range, salesTrend]
   );
 
   const rejectedSeries = useMemo(
-    () => buildThirtyDaySeries(rejectedTrend, ['rejected_count']),
-    [rejectedTrend]
+    () => buildSeriesByRange(range, rejectedTrend, ['rejected_count', 'loss_of_business']),
+    [range, rejectedTrend]
   );
 
   const salesTrendData = useMemo(
@@ -296,31 +310,33 @@ function Dashboard() {
   );
 
   const rejectedTrendData = useMemo(
-    () => {
-      const estimatedLossPerOrder = toNumber(summary30d?.avg_order_value || summaryToday?.avg_order_value);
-      return (
+    () =>
       rejectedSeries.map((row) => ({
         ...row,
         rejected_baseline: 0,
-        loss_of_business: Number((toNumber(row.rejected_count) * estimatedLossPerOrder).toFixed(2)),
-      }))
-      );
-    },
-    [rejectedSeries, summary30d, summaryToday]
+      })),
+    [rejectedSeries]
   );
 
   const paymentTypeData = useMemo(() => {
     const byLabel = new Map(
-      paymentType.map((row) => [row.label, {
-        name: row.label,
-        value: toNumber(row.percent),
-        count: toNumber(row.order_count),
-        total_sales: toNumber(row.total_sales),
-        color: PAYMENT_COLORS[row.label] || '#cbd5e1',
-      }])
+      paymentType.map((row) => {
+        const label = toPaymentLabel(row.payment_method);
+        return [label, {
+          name: label,
+          value: toNumber(row.percent),
+          count: toNumber(row.order_count),
+          total_sales: toNumber(row.total_sales),
+          color: PAYMENT_COLORS[label] || '#cbd5e1',
+        }];
+      })
     );
     const cod = byLabel.get('COD') || { name: 'COD', value: 0, count: 0, total_sales: 0, color: PAYMENT_COLORS.COD };
     const card = byLabel.get('CARD') || { name: 'CARD', value: 0, count: 0, total_sales: 0, color: PAYMENT_COLORS.CARD };
+    const online = byLabel.get('ONLINE') || { name: 'ONLINE', value: 0, count: 0, total_sales: 0, color: PAYMENT_COLORS.ONLINE };
+    if (online.value > 0 || online.count > 0) {
+      return [cod, card, online];
+    }
     return [cod, card];
   }, [paymentType]);
 
@@ -338,7 +354,7 @@ function Dashboard() {
       }
     );
 
-    const totalOrders = toNumber(summary30d?.total_orders);
+    const totalOrders = toNumber(summary?.total_orders);
     return ['Delivery', 'Pickup'].map((name) => ({
       name,
       value: Number(totals[name].percent.toFixed(2)),
@@ -346,9 +362,12 @@ function Dashboard() {
       total_sales: Number(totals[name].sales.toFixed(2)),
       color: DELIVERY_COLORS[name],
     }));
-  }, [channelContribution, summary30d]);
+  }, [channelContribution, summary]);
 
   const slowSectionLoading = loadingSlow && salesTrend.length === 0 && rejectedTrend.length === 0;
+  const rangeBadge = range === 'day'
+    ? `${MONTH_NAMES[new Date().getMonth()]} ${new Date().getDate()}, ${new Date().getFullYear()}`
+    : `${MONTH_NAMES[new Date().getMonth()]} ${new Date().getFullYear()}`;
 
   return (
     <div className="space-y-6">
@@ -379,7 +398,11 @@ function Dashboard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="flex justify-end">
+        <RangeToggle range={range} onChange={setRange} />
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
         {stats.map((item) => (
           <div
             key={`${item.label}-${item.caption}`}
@@ -398,10 +421,7 @@ function Dashboard() {
         <div className="bg-white rounded-2xl shadow-card border border-slate-100 p-4">
           <div className="flex items-center justify-between">
             <div className="text-sm font-semibold">Order Trend</div>
-            <div className="inline-flex rounded-md border border-slate-200 overflow-hidden text-[10px]">
-              <button type="button" className="px-2 py-1 bg-white text-muted">Day</button>
-              <button type="button" className="px-2 py-1 bg-brandYellow/20 text-ink border-l border-slate-200">Month</button>
-            </div>
+            <RangeToggle range={range} onChange={setRange} />
           </div>
           <div className="mt-4 h-56">
             {salesTrendData.length === 0 ? (
@@ -418,7 +438,7 @@ function Dashboard() {
                     angle={-40}
                     textAnchor="end"
                     height={48}
-                    label={{ value: 'DATES', position: 'insideBottom', offset: -2, style: { fontSize: 10 } }}
+                    label={{ value: range === 'day' ? 'HOURS' : 'DATES', position: 'insideBottom', offset: -2, style: { fontSize: 10 } }}
                   />
                   <YAxis
                     allowDecimals={false}
@@ -465,10 +485,7 @@ function Dashboard() {
         <div className="bg-white rounded-2xl shadow-card border border-slate-100 p-4">
           <div className="flex items-center justify-between">
             <div className="text-sm font-semibold">Rejected Order Trend</div>
-            <div className="inline-flex rounded-md border border-slate-200 overflow-hidden text-[10px]">
-              <button type="button" className="px-2 py-1 bg-white text-muted">Day</button>
-              <button type="button" className="px-2 py-1 bg-brandYellow/20 text-ink border-l border-slate-200">Month</button>
-            </div>
+            <RangeToggle range={range} onChange={setRange} />
           </div>
           <div className="mt-4 h-56">
             {rejectedTrendData.length === 0 ? (
@@ -491,7 +508,7 @@ function Dashboard() {
                     angle={-40}
                     textAnchor="end"
                     height={48}
-                    label={{ value: 'DATES', position: 'insideBottom', offset: -2, style: { fontSize: 10 } }}
+                    label={{ value: range === 'day' ? 'HOURS' : 'DATES', position: 'insideBottom', offset: -2, style: { fontSize: 10 } }}
                   />
                   <YAxis
                     allowDecimals={false}
@@ -532,7 +549,7 @@ function Dashboard() {
             <h2 className="text-sm font-semibold">Trending Items</h2>
           </div>
           <div className="mt-3 flex items-center gap-2 text-[10px]">
-            <span className="px-3 py-1 rounded border border-slate-200 text-slate-700">{MONTH_NAMES[new Date().getMonth()]} {new Date().getFullYear()}</span>
+            <span className="px-3 py-1 rounded border border-slate-200 text-slate-700">{rangeBadge}</span>
           </div>
           <div className="mt-3 overflow-x-auto max-h-[240px]">
             <table className="w-full text-xs">
@@ -564,20 +581,10 @@ function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-
         <div className="bg-white rounded-2xl shadow-card border border-slate-100 p-4">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold">Payment Type</h2>
-          </div>
-          <div className="mt-3 flex items-center justify-between gap-2">
-            <div className="inline-flex gap-2 text-[10px]">
-              <span className="px-3 py-1 rounded border border-slate-200 text-slate-700">{new Date().getFullYear()}</span>
-              <span className="px-3 py-1 rounded border border-slate-200 text-slate-700">{MONTH_NAMES[new Date().getMonth()]}</span>
-            </div>
-            <div className="inline-flex rounded-md border border-slate-200 overflow-hidden text-[10px]">
-              <button type="button" className="px-2 py-1 bg-white text-muted">Day</button>
-              <button type="button" className="px-2 py-1 bg-brandYellow/20 text-ink border-l border-slate-200">Month</button>
-            </div>
+            <RangeToggle range={range} onChange={setRange} />
           </div>
           <div className="mt-3 h-52">
             {paymentTypeData.every((row) => row.value === 0) ? (
@@ -628,16 +635,7 @@ function Dashboard() {
         <div className="bg-white rounded-2xl shadow-card border border-slate-100 p-4">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold">Delivery/Pickup</h2>
-          </div>
-          <div className="mt-3 flex items-center justify-between gap-2">
-            <div className="inline-flex gap-2 text-[10px]">
-              <span className="px-3 py-1 rounded border border-slate-200 text-slate-700">{new Date().getFullYear()}</span>
-              <span className="px-3 py-1 rounded border border-slate-200 text-slate-700">{MONTH_NAMES[new Date().getMonth()]}</span>
-            </div>
-            <div className="inline-flex rounded-md border border-slate-200 overflow-hidden text-[10px]">
-              <button type="button" className="px-2 py-1 bg-white text-muted">Day</button>
-              <button type="button" className="px-2 py-1 bg-brandYellow/20 text-ink border-l border-slate-200">Month</button>
-            </div>
+            <RangeToggle range={range} onChange={setRange} />
           </div>
           <div className="mt-3 h-52">
             {deliveryPickupData.every((row) => row.value === 0) ? (

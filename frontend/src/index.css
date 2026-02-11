@@ -117,3 +117,15 @@ body {
 .animate-slide-up {
   animation: slide-up 0.7s ease-out both;
 }
+
+input:focus,
+textarea:focus,
+select:focus,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid #facc15;
+  outline-offset: 0;
+  border-color: #facc15 !important;
+  box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.25);
+}

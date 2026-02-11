@@ -25,8 +25,9 @@ function Cashier() {
 
   useEffect(() => {
     if (!authed) return;
+    const outletId = Number(localStorage.getItem('outletId') || 1);
     api
-      .get('/products')
+      .get('/products', { params: { outlet_id: Number.isInteger(outletId) && outletId > 0 ? outletId : 1 } })
       .then((res) => {
         setProducts(res.data.data || []);
       })

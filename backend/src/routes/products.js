@@ -1,162 +1,618 @@
 const express = require('express');
-const router = express.Router();
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const multer = require('multer');
 const db = require('../services/db');
+const {
+  CatalogValidationError,
+  parsePagination,
+  toBool,
+  toPositiveInt,
+  getCompatProducts,
+  listSections,
+  createSection,
+  updateSection,
+  reorderSections,
+  softDeleteSection,
+  listItems,
+  getProductByUid,
+  createItem,
+  updateItem,
+  setItemActive,
+  softDeleteItem,
+  listImages,
+  addImage,
+  updateImage,
+  softDeleteImage,
+  listOutletSettings,
+  upsertOutletSetting,
+  getDefaultSectionId,
+} = require('../services/catalogService');
 
-// GET /api/products
-router.get('/', async (req, res, next) => {
+const router = express.Router();
+
+const UPLOAD_DIR = path.join(__dirname, '../../uploads/products');
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const imageStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase() || '.bin';
+    const suffix = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+    cb(null, `${suffix}${ext}`);
+  },
+});
+
+const uploadImage = multer({
+  storage: imageStorage,
+  limits: { fileSize: 500 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype || !file.mimetype.startsWith('image/')) {
+      return cb(new CatalogValidationError('only image uploads are allowed'));
+    }
+    return cb(null, true);
+  },
+});
+
+const asyncHandler = (fn) => async (req, res, next) => {
   try {
-    const result = await db.query(
-      `
-      SELECT id, name, sku, price, stock, is_active, created_at, updated_at
-      FROM products
-      ORDER BY id DESC
-      `
-    );
-    res.json({ data: result.rows });
+    await fn(req, res, next);
   } catch (err) {
     next(err);
   }
-});
+};
 
-// GET /api/products/:id
-router.get('/:id', async (req, res, next) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id <= 0) {
-    return res.status(400).json({ error: 'invalid product id' });
+const ensureRole = (roles) => (req, res, next) => {
+  if (!req.user || !roles.includes(req.user.role)) {
+    return res.status(403).json({ error: 'Insufficient role permissions' });
+  }
+  return next();
+};
+
+const resolveScopedOutlet = (req, value) => {
+  const requested = toPositiveInt(value);
+  if (!requested) {
+    throw new CatalogValidationError('outlet_id must be a positive integer');
   }
 
-  try {
+  if (!req.user) {
+    throw new CatalogValidationError('Missing authenticated user context', 401);
+  }
+
+  if (req.user.role === 'admin') {
+    const allowed = Array.isArray(req.user.outlet_ids) ? req.user.outlet_ids : [];
+    if (!allowed.includes(requested)) {
+      throw new CatalogValidationError('Outlet is not in admin scope', 403);
+    }
+    return requested;
+  }
+
+  if (requested !== req.effectiveOutletId) {
+    throw new CatalogValidationError('Cross-outlet access denied', 403);
+  }
+  return requested;
+};
+
+const mapLegacyResponse = (product) => ({
+  id: product.id,
+  name: product.name,
+  sku: product.sku,
+  price: Number(product.base_price),
+  stock: Number(product.stock_quantity),
+  is_active: product.is_active,
+  created_at: product.created_at,
+  updated_at: product.updated_at,
+});
+
+const handleCatalogError = (res, err) => {
+  if (err instanceof CatalogValidationError) {
+    return res.status(err.statusCode).json({ error: err.message });
+  }
+  if (err.code === '23505') {
+    return res.status(409).json({ error: 'unique constraint violation' });
+  }
+  throw err;
+};
+
+// GET /api/products
+router.get(
+  '/',
+  asyncHandler(async (req, res) => {
+    const data = await getCompatProducts({ outletId: req.effectiveOutletId });
+    return res.json({ data });
+  })
+);
+
+// GET /api/products/items
+router.get(
+  '/items',
+  asyncHandler(async (req, res) => {
+    const pagination = parsePagination(req.query);
+    const includeInactive = toBool(req.query.include_inactive, false) && req.user.role !== 'cashier';
+    const includeUnavailable = toBool(req.query.include_unavailable, false) && req.user.role !== 'cashier';
+    const response = await listItems({
+      outletId: req.effectiveOutletId,
+      sectionId: req.query.section_id || null,
+      search: req.query.search || null,
+      pagination,
+      includeInactive,
+      includeUnavailable,
+    });
+    return res.json(response);
+  })
+);
+
+// POST /api/products/items
+router.post(
+  '/items',
+  ensureRole(['manager', 'admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      const created = await createItem({
+        outletId: req.effectiveOutletId,
+        payload: req.body || {},
+      });
+      return res.status(201).json({ data: created });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+router.patch(
+  '/items/:product_uid',
+  ensureRole(['manager', 'admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      const updated = await updateItem({
+        productUid: req.params.product_uid,
+        payload: req.body || {},
+        outletId: req.effectiveOutletId,
+      });
+      return res.json({ data: updated });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+router.patch(
+  '/items/:product_uid/active',
+  ensureRole(['manager', 'admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      const isActive = toBool(req.body?.is_active, true);
+      await setItemActive({ productUid: req.params.product_uid, isActive });
+      return res.json({ data: { product_uid: req.params.product_uid, is_active: isActive } });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+router.delete(
+  '/items/:product_uid',
+  ensureRole(['manager', 'admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      await softDeleteItem({ productUid: req.params.product_uid });
+      return res.json({ data: { product_uid: req.params.product_uid, deleted: true } });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+// Sections
+router.get(
+  '/sections',
+  asyncHandler(async (req, res) => {
+    const data = await listSections({ outletId: req.effectiveOutletId });
+    return res.json({ data });
+  })
+);
+
+router.post(
+  '/sections',
+  ensureRole(['admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      const created = await createSection({
+        outletId: req.effectiveOutletId,
+        payload: req.body || {},
+      });
+      return res.status(201).json({ data: created });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+router.patch(
+  '/sections/reorder',
+  ensureRole(['admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      await reorderSections({
+        items: req.body?.items || [],
+        outletId: req.effectiveOutletId,
+      });
+      return res.json({ data: { reordered: true } });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+router.patch(
+  '/sections/:section_id',
+  ensureRole(['admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      const updated = await updateSection({
+        sectionId: req.params.section_id,
+        payload: req.body || {},
+        outletId: req.effectiveOutletId,
+      });
+      return res.json({ data: updated });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+router.delete(
+  '/sections/:section_id',
+  ensureRole(['admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      await softDeleteSection({
+        sectionId: req.params.section_id,
+        outletId: req.effectiveOutletId,
+      });
+      return res.json({ data: { section_id: req.params.section_id, deleted: true } });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+// Images
+router.get(
+  '/items/:product_uid/images',
+  asyncHandler(async (req, res, next) => {
+    try {
+      const data = await listImages({ productUid: req.params.product_uid });
+      return res.json({ data });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+router.post(
+  '/items/:product_uid/images',
+  ensureRole(['manager', 'admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      const created = await addImage({
+        productUid: req.params.product_uid,
+        payload: req.body || {},
+      });
+      return res.status(201).json({ data: created });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+router.post(
+  '/items/:product_uid/images/upload',
+  ensureRole(['manager', 'admin']),
+  uploadImage.single('image'),
+  asyncHandler(async (req, res, next) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'image file is required' });
+      }
+      const imageUrl = `${req.protocol}://${req.get('host')}/uploads/products/${req.file.filename}`;
+      const created = await addImage({
+        productUid: req.params.product_uid,
+        payload: {
+          image_url: imageUrl,
+          display_order: req.body?.display_order ? Number(req.body.display_order) : 0,
+          is_primary: toBool(req.body?.is_primary, false),
+        },
+      });
+      return res.status(201).json({ data: created });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+router.patch(
+  '/items/:product_uid/images/:image_id',
+  ensureRole(['manager', 'admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      const updated = await updateImage({
+        productUid: req.params.product_uid,
+        imageId: req.params.image_id,
+        payload: req.body || {},
+      });
+      return res.json({ data: updated });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+router.delete(
+  '/items/:product_uid/images/:image_id',
+  ensureRole(['manager', 'admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      await softDeleteImage({
+        productUid: req.params.product_uid,
+        imageId: req.params.image_id,
+      });
+      return res.json({ data: { image_id: req.params.image_id, deleted: true } });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+// Outlet settings
+router.get(
+  '/items/:product_uid/outlets',
+  ensureRole(['manager', 'admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      const outletId = resolveScopedOutlet(req, req.query.outlet_id || req.effectiveOutletId);
+      const data = await listOutletSettings({
+        productUid: req.params.product_uid,
+        outletId,
+      });
+      return res.json({ data });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+router.put(
+  '/items/:product_uid/outlets/:outlet_id',
+  ensureRole(['manager', 'admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      const outletId = resolveScopedOutlet(req, req.params.outlet_id);
+      const data = await upsertOutletSetting({
+        productUid: req.params.product_uid,
+        outletId,
+        payload: req.body || {},
+      });
+      return res.json({ data });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
+
+// GET /api/products/:id (legacy compatibility)
+router.get(
+  '/:id(\\d+)',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
     const result = await db.query(
       `
-      SELECT id, name, sku, price, stock, is_active, created_at, updated_at
-      FROM products
-      WHERE id = $1
+      SELECT
+        p.id,
+        p.name,
+        p.sku,
+        COALESCE(pos.price_override, p.base_price)::numeric(12,2) AS price,
+        COALESCE(pos.stock_override, p.stock_quantity) AS stock,
+        p.is_active,
+        p.created_at,
+        p.updated_at
+      FROM products p
+      LEFT JOIN product_outlet_settings pos
+        ON pos.product_id = p.id
+        AND pos.outlet_id = $2
+        AND pos.deleted_at IS NULL
+      WHERE p.id = $1
+        AND p.deleted_at IS NULL
       `,
-      [id]
+      [id, req.effectiveOutletId]
     );
-
     if (!result.rows[0]) {
       return res.status(404).json({ error: 'Product not found' });
     }
-
     return res.json({ data: result.rows[0] });
-  } catch (err) {
-    return next(err);
-  }
-});
+  })
+);
 
-// POST /api/products
-router.post('/', async (req, res, next) => {
-  const { name, sku, price, stock, isActive } = req.body || {};
-  if (!name || typeof name !== 'string') {
-    return res.status(400).json({ error: 'name is required' });
-  }
-  if (!sku || typeof sku !== 'string') {
-    return res.status(400).json({ error: 'sku is required' });
-  }
-  if (typeof price !== 'number' || price < 0) {
-    return res.status(400).json({ error: 'price must be a non-negative number' });
-  }
-  if (stock !== undefined && (!Number.isInteger(stock) || stock < 0)) {
-    return res.status(400).json({ error: 'stock must be a non-negative integer' });
-  }
-
-  try {
-    const result = await db.query(
-      `
-      INSERT INTO products (name, sku, price, stock, is_active, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, now(), now())
-      RETURNING id, name, sku, price, stock, is_active, created_at, updated_at
-      `,
-      [name.trim(), sku.trim(), price, stock ?? 0, isActive ?? true]
-    );
-    return res.status(201).json({ data: result.rows[0] });
-  } catch (err) {
-    if (err.code === '23505') {
-      return res.status(409).json({ error: 'sku already exists' });
+// POST /api/products (legacy compatibility)
+router.post(
+  '/',
+  ensureRole(['manager', 'admin']),
+  asyncHandler(async (req, res, next) => {
+    try {
+      const defaultSectionId = await getDefaultSectionId(req.effectiveOutletId);
+      const product = await createItem({
+        outletId: req.effectiveOutletId,
+        payload: {
+          name: req.body?.name,
+          sku: req.body?.sku,
+          base_price: req.body?.price,
+          stock_quantity: req.body?.stock,
+          is_active: req.body?.isActive ?? req.body?.is_active,
+          section_id: req.body?.section_id || defaultSectionId,
+        },
+      });
+      return res.status(201).json({ data: mapLegacyResponse(product) });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
     }
-    return next(err);
-  }
-});
+  })
+);
 
-// PUT /api/products/:id
-router.put('/:id', async (req, res, next) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id <= 0) {
-    return res.status(400).json({ error: 'invalid product id' });
-  }
-
-  const { name, sku, price, stock, isActive } = req.body || {};
-  if (price !== undefined && (typeof price !== 'number' || price < 0)) {
-    return res.status(400).json({ error: 'price must be a non-negative number' });
-  }
-  if (stock !== undefined && (!Number.isInteger(stock) || stock < 0)) {
-    return res.status(400).json({ error: 'stock must be a non-negative integer' });
-  }
-
-  try {
-    const current = await db.query('SELECT id FROM products WHERE id = $1', [id]);
+// PUT /api/products/:id (legacy compatibility)
+router.put(
+  '/:id(\\d+)',
+  ensureRole(['manager', 'admin']),
+  asyncHandler(async (req, res, next) => {
+    const id = Number(req.params.id);
+    const current = await db.query(
+      `
+      SELECT product_uid
+      FROM products
+      WHERE id = $1
+        AND deleted_at IS NULL
+      `,
+      [id]
+    );
     if (!current.rows[0]) {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    const result = await db.query(
-      `
-      UPDATE products
-      SET
-        name = COALESCE($2, name),
-        sku = COALESCE($3, sku),
-        price = COALESCE($4, price),
-        stock = COALESCE($5, stock),
-        is_active = COALESCE($6, is_active),
-        updated_at = now()
-      WHERE id = $1
-      RETURNING id, name, sku, price, stock, is_active, created_at, updated_at
-      `,
-      [
-        id,
-        typeof name === 'string' ? name.trim() : null,
-        typeof sku === 'string' ? sku.trim() : null,
-        price ?? null,
-        stock ?? null,
-        isActive ?? null,
-      ]
-    );
-
-    return res.json({ data: result.rows[0] });
-  } catch (err) {
-    if (err.code === '23505') {
-      return res.status(409).json({ error: 'sku already exists' });
+    try {
+      const updated = await updateItem({
+        productUid: current.rows[0].product_uid,
+        payload: {
+          name: req.body?.name,
+          sku: req.body?.sku,
+          base_price: req.body?.price,
+          stock_quantity: req.body?.stock,
+          is_active: req.body?.isActive ?? req.body?.is_active,
+        },
+        outletId: req.effectiveOutletId,
+      });
+      return res.json({ data: mapLegacyResponse(updated) });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
     }
-    return next(err);
-  }
-});
+  })
+);
 
-// DELETE /api/products/:id
-router.delete('/:id', async (req, res, next) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id <= 0) {
-    return res.status(400).json({ error: 'invalid product id' });
-  }
-
-  try {
-    const result = await db.query(
+// DELETE /api/products/:id (legacy compatibility soft-delete)
+router.delete(
+  '/:id(\\d+)',
+  ensureRole(['manager', 'admin']),
+  asyncHandler(async (req, res, next) => {
+    const id = Number(req.params.id);
+    const current = await db.query(
       `
-      DELETE FROM products
+      SELECT product_uid
+      FROM products
       WHERE id = $1
-      RETURNING id, name, sku, price, stock, is_active, created_at, updated_at
+        AND deleted_at IS NULL
       `,
       [id]
     );
-
-    if (!result.rows[0]) {
+    if (!current.rows[0]) {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    return res.json({ data: result.rows[0] });
-  } catch (err) {
-    return next(err);
-  }
-});
+    try {
+      await softDeleteItem({ productUid: current.rows[0].product_uid });
+      return res.json({ data: { id, deleted: true } });
+    } catch (err) {
+      try {
+        handleCatalogError(res, err);
+      } catch (forward) {
+        return next(forward);
+      }
+      return null;
+    }
+  })
+);
 
 module.exports = router;
