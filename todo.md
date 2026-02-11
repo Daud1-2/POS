@@ -1,61 +1,53 @@
-# Plan: Orderly POS Admin UI (Yellow Theme + Orderly Branding)
+# Orderly POS Execution TODO
 
-## Summary
-Implement the admin dashboard shell and dashboard page based on the provided Blink-style designs. Replace all purple accents with brand yellow `#FACC15`, and replace Blink branding with Orderly logo and name. The admin scope is dashboard + shell only, with stub pages for nav routes.
+## Objective
+Convert dashboard and core order flow to fully data-driven PostgreSQL behavior with polling-based realtime updates.
 
-## Design Analysis (from images + ZIP)
-- Layout: Left sidebar navigation, topbar with timezone/branch/search/profile, main content with cards and charts.
-- Visuals: White/light gray surfaces, soft shadows, rounded cards, purple accent on active nav and buttons.
-- Tables: Clean grid lines and light headers.
-- Branding: Replace Blink logo/text with Orderly logo and name.
-- Backgrounds: Use `pos_bg/*.png` as optional hero/cover/banner backgrounds.
+## Completed
+- [x] Added PostgreSQL migration `database/migrations/007_create_products_table_pg.sql`.
+- [x] Added PostgreSQL migration `database/migrations/008_alter_orders_add_cashier_id.sql`.
+- [x] Added product seed file `database/seeds/001_products_seed_pg.sql`.
+- [x] Applied migrations and seed to local `POSDB`.
+- [x] Refactored `backend/src/routes/products.js` to DB-backed CRUD.
+- [x] Refactored `backend/src/routes/sales.js`:
+  - strict payload validation
+  - transactional product row locking (`FOR UPDATE`)
+  - order + order_items inserts
+  - stock decrement in same transaction
+  - `cashier_id` persisted on orders
+- [x] Added `GET /api/health/db` in `backend/src/index.js`.
+- [x] Installed `recharts` in frontend.
+- [x] Rebuilt `frontend/src/pages/Dashboard.js` with real charts:
+  - sales trend
+  - rejected trend
+  - heatmap grid
+  - channel contribution pie
+- [x] Split polling:
+  - fast data every 15s (summary/top products/channel)
+  - slow data every 60s (trend/rejected/heatmap)
 
-## Implementation Steps
-1. Create brand tokens in Tailwind.
-   - `brandYellow: #FACC15`
-   - `brandYellowDark: #EAB308`
-   - Neutrals: `#111827`, `#6B7280`, `#F8FAFC`, `#FFFFFF`
-   - Add card shadows and border radius utilities.
-2. Add branding assets.
-   - Use `frontend/src/assets/orderly-logo.png`.
-   - Create reusable `Logo` component.
-3. Build admin shell.
-   - Create `AdminLayout` with sidebar + topbar + content area.
-4. Sidebar navigation.
-   - Items: Dashboard, Orders, Products Catalogue, Discounts, Customers, SMS Campaigns, Reporting, Settings.
-   - Active state uses yellow background + dark text.
-5. Topbar.
-   - Left: timezone pill (UTC +05:00 Asia/Karachi).
-   - Center: branch selector.
-   - Right: search input, user badge, small logo.
-6. Dashboard page (static).
-   - Summary cards row (orders/sales/etc).
-   - Charts section with placeholders.
-   - Table section with sample rows.
-7. Stub pages.
-   - Simple header + “Coming soon” for Orders, Products, Discounts, Customers, SMS, Reporting, Settings.
-8. Replace purple across UI.
-   - Buttons, nav, highlights, chart accents use yellow.
-9. Route wiring.
-   - Wrap admin routes with `AdminLayout`.
-   - `/home` maps to dashboard.
-10. Visual QA.
-   - Check responsive breakpoints (sm, md, lg).
-   - Confirm yellow accents, Orderly branding, clean light surfaces.
+## Remaining
+- [ ] Add automated backend API tests for sales transaction and dashboard aggregations.
+- [ ] Add backend setup/run section in README for migrations + seeds.
+- [ ] Final smoke test after backend restart with new code.
 
-## Interfaces / Public API Changes
-- `/home` → Admin Dashboard (Orderly theme).
-- New routes for Orders, Products, Discounts, Customers, SMS, Reporting, Settings.
-- New components: `AdminLayout`, `Sidebar`, `Topbar`, `Logo`.
+## Runbook
+```powershell
+# Apply migrations
+$env:PGPASSWORD='Daud@123'
+& 'C:\Program Files\PostgreSQL\18\bin\psql.exe' -h localhost -U postgres -d POSDB -f database\migrations\005_create_orders_table_pg.sql
+& 'C:\Program Files\PostgreSQL\18\bin\psql.exe' -h localhost -U postgres -d POSDB -f database\migrations\006_create_order_items_table_pg.sql
+& 'C:\Program Files\PostgreSQL\18\bin\psql.exe' -h localhost -U postgres -d POSDB -f database\migrations\007_create_products_table_pg.sql
+& 'C:\Program Files\PostgreSQL\18\bin\psql.exe' -h localhost -U postgres -d POSDB -f database\migrations\008_alter_orders_add_cashier_id.sql
 
-## Tests / QA Scenarios
-1. Visual check for yellow replacements (no purple).
-2. Orderly logo in sidebar and topbar.
-3. Dashboard layout matches reference structure.
-4. Responsive layout at 640px, 768px, 1024px.
-5. No console errors.
+# Seed products
+& 'C:\Program Files\PostgreSQL\18\bin\psql.exe' -h localhost -U postgres -d POSDB -f database\seeds\001_products_seed_pg.sql
 
-## Assumptions
-- Primary brand color is `#FACC15`.
-- Logo asset exists at `frontend/src/assets/orderly-logo.png`.
-- Dashboard is static for now (no API wiring).
+# Start backend
+cd backend
+npm run dev
+
+# Start frontend
+cd ..\frontend
+npm start
+```
