@@ -118,14 +118,38 @@ body {
   animation: slide-up 0.7s ease-out both;
 }
 
-input:focus,
+input:not([type='checkbox']):not([type='radio']):focus,
 textarea:focus,
 select:focus,
-input:focus-visible,
+input:not([type='checkbox']):not([type='radio']):focus-visible,
 textarea:focus-visible,
 select:focus-visible {
   outline: 2px solid #facc15;
   outline-offset: 0;
   border-color: #facc15 !important;
   box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.25);
+}
+
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+
+  .cashier-print-root,
+  .cashier-print-root * {
+    visibility: visible !important;
+  }
+
+  .cashier-print-root {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 18px !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+  }
 }

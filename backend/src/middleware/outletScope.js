@@ -3,35 +3,61 @@ const toPositiveInt = (value) => {
   if (!Number.isInteger(num) || num <= 0) return null;
   return num;
 };
+const DEFAULT_TIMEZONE = 'Asia/Karachi';
+
+const parseBranchScope = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  if (String(value).trim().toLowerCase() === 'all') return 'all';
+  return toPositiveInt(value);
+};
 
 module.exports = (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({ error: 'Missing authenticated user context' });
   }
 
-  const requestedOutletId = toPositiveInt(req.query.outlet_id);
+  const requestedBranch = parseBranchScope(req.query.branch_id);
   const { role } = req.user;
 
   if (role === 'admin') {
-    if (!requestedOutletId) {
-      return res.status(400).json({ error: 'outlet_id is required for admin requests' });
+    const allowedBranchIds = Array.isArray(req.user.branch_ids) ? req.user.branch_ids : [];
+    if (!allowedBranchIds.length) {
+      return res.status(403).json({ error: 'Authenticated admin has no branch scope' });
     }
-    const allowedOutletIds = Array.isArray(req.user.outlet_ids) ? req.user.outlet_ids : [];
-    if (!allowedOutletIds.includes(requestedOutletId)) {
-      return res.status(403).json({ error: 'Outlet is not in admin scope' });
+
+    if (requestedBranch === 'all' || requestedBranch === null) {
+      req.effectiveBranchIds = [...allowedBranchIds];
+      req.effectiveBranchId = allowedBranchIds[0];
+      req.branchScope = 'all';
+    } else if (!allowedBranchIds.includes(requestedBranch)) {
+      // Stale client scope fallback: keep admin inside allowed scope without hard failure.
+      req.effectiveBranchIds = [allowedBranchIds[0]];
+      req.effectiveBranchId = allowedBranchIds[0];
+      req.branchScope = 'single';
+    } else {
+      req.effectiveBranchIds = [requestedBranch];
+      req.effectiveBranchId = requestedBranch;
+      req.branchScope = 'single';
     }
-    req.effectiveOutletId = requestedOutletId;
   } else {
-    const ownOutletId = toPositiveInt(req.user.outlet_id);
-    if (!ownOutletId) {
-      return res.status(403).json({ error: 'Authenticated user has no outlet scope' });
+    const ownBranchId = toPositiveInt(req.user.branch_id);
+    if (!ownBranchId) {
+      return res.status(403).json({ error: 'Authenticated user has no branch scope' });
     }
-    if (requestedOutletId && requestedOutletId !== ownOutletId) {
-      return res.status(403).json({ error: 'Cross-outlet access denied' });
+    if (requestedBranch === 'all') {
+      return res.status(403).json({ error: 'Cross-branch access denied' });
     }
-    req.effectiveOutletId = ownOutletId;
+    if (requestedBranch && requestedBranch !== ownBranchId) {
+      return res.status(403).json({ error: 'Cross-branch access denied' });
+    }
+    req.effectiveBranchIds = [ownBranchId];
+    req.effectiveBranchId = ownBranchId;
+    req.branchScope = 'single';
   }
 
-  req.effectiveTimezone = req.user.timezone || 'UTC';
+  if (!Array.isArray(req.effectiveBranchIds) || req.effectiveBranchIds.length === 0) {
+    req.effectiveBranchIds = [req.effectiveBranchId];
+  }
+  req.effectiveTimezone = req.user.timezone || DEFAULT_TIMEZONE;
   return next();
 };

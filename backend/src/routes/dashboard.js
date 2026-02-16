@@ -1,9 +1,11 @@
 const express = require('express');
 const db = require('../services/db');
+const { getDailyShiftSummary } = require('../services/shiftService');
 
 const router = express.Router();
 
 const ALLOWED_RANGES = new Set(['day', 'month']);
+const DEFAULT_TIMEZONE = 'Asia/Karachi';
 
 const toNumber = (value) => Number(value || 0);
 
@@ -28,19 +30,19 @@ router.get('/summary', async (req, res, next) => {
   try {
     const range = normalizeRange(req.query.range, 'day');
     const rangeClause = buildRangeClause(range, 'created_at');
-    const params = [req.effectiveOutletId, req.effectiveTimezone || 'UTC'];
+    const params = [req.effectiveBranchIds, req.effectiveTimezone || DEFAULT_TIMEZONE];
 
     const summaryResult = await db.query(
       `
       SELECT
         COALESCE(SUM(total), 0) AS total_sales,
         COUNT(*) AS total_orders,
-        SUM(CASE WHEN source = 'website' THEN 1 ELSE 0 END) AS web_orders,
-        COALESCE(SUM(CASE WHEN source = 'website' THEN total ELSE 0 END), 0) AS web_sales,
+        SUM(CASE WHEN order_channel IN ('online', 'whatsapp', 'delivery_platform') THEN 1 ELSE 0 END) AS online_orders,
+        COALESCE(SUM(CASE WHEN order_channel IN ('online', 'whatsapp', 'delivery_platform') THEN total ELSE 0 END), 0) AS online_sales,
         COALESCE(AVG(total), 0) AS avg_order_value,
         COALESCE(MAX(total), 0) AS highest_order_value
       FROM orders
-      WHERE outlet_id = $1
+      WHERE outlet_id = ANY($1::int[])
         AND deleted_at IS NULL
         AND status = 'completed'
         AND ${rangeClause}
@@ -52,7 +54,7 @@ router.get('/summary', async (req, res, next) => {
       `
       SELECT COUNT(*) AS count
       FROM orders
-      WHERE outlet_id = $1
+      WHERE outlet_id = ANY($1::int[])
         AND deleted_at IS NULL
         AND status = 'completed'
         AND customer_id IS NOT NULL
@@ -71,7 +73,7 @@ router.get('/summary', async (req, res, next) => {
             created_at,
             ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY created_at) AS order_rank
           FROM orders
-          WHERE outlet_id = $1
+          WHERE outlet_id = ANY($1::int[])
             AND deleted_at IS NULL
             AND status = 'completed'
             AND customer_id IS NOT NULL
@@ -106,13 +108,27 @@ router.get('/summary', async (req, res, next) => {
         range,
         total_sales: toNumber(summaryResult.rows[0]?.total_sales),
         total_orders: toNumber(summaryResult.rows[0]?.total_orders),
-        web_orders: toNumber(summaryResult.rows[0]?.web_orders),
-        web_sales: toNumber(summaryResult.rows[0]?.web_sales),
+        online_orders: toNumber(summaryResult.rows[0]?.online_orders),
+        online_sales: toNumber(summaryResult.rows[0]?.online_sales),
+        web_orders: toNumber(summaryResult.rows[0]?.online_orders),
+        web_sales: toNumber(summaryResult.rows[0]?.online_sales),
         avg_order_value: toNumber(summaryResult.rows[0]?.avg_order_value),
         highest_order_value: toNumber(summaryResult.rows[0]?.highest_order_value),
         new_vs_old: newVsOld,
       },
     });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.get('/shift-summary', async (req, res, next) => {
+  try {
+    const summary = await getDailyShiftSummary({
+      outletIds: req.effectiveBranchIds,
+      timezone: req.effectiveTimezone || DEFAULT_TIMEZONE,
+    });
+    return res.json({ data: summary });
   } catch (err) {
     return next(err);
   }
@@ -129,26 +145,28 @@ router.get('/sales-trend', async (req, res, next) => {
       SELECT
         ${bucketExpr} AS bucket,
         COUNT(*) AS order_count,
-        SUM(CASE WHEN source = 'website' THEN 1 ELSE 0 END) AS web_order_count,
-        COALESCE(SUM(CASE WHEN source = 'website' THEN total ELSE 0 END), 0) AS web_sales_total,
+        SUM(CASE WHEN order_channel IN ('online', 'whatsapp', 'delivery_platform') THEN 1 ELSE 0 END) AS online_order_count,
+        COALESCE(SUM(CASE WHEN order_channel IN ('online', 'whatsapp', 'delivery_platform') THEN total ELSE 0 END), 0) AS online_sales_total,
         COALESCE(SUM(total), 0) AS sales_total
       FROM orders
-      WHERE outlet_id = $1
+      WHERE outlet_id = ANY($1::int[])
         AND deleted_at IS NULL
         AND status = 'completed'
         AND ${rangeClause}
       GROUP BY bucket
       ORDER BY bucket ASC
       `,
-      [req.effectiveOutletId, req.effectiveTimezone || 'UTC']
+      [req.effectiveBranchIds, req.effectiveTimezone || DEFAULT_TIMEZONE]
     );
 
     return res.json({
       data: result.rows.map((row) => ({
         ...row,
         order_count: toNumber(row.order_count),
-        web_order_count: toNumber(row.web_order_count),
-        web_sales_total: toNumber(row.web_sales_total),
+        online_order_count: toNumber(row.online_order_count),
+        online_sales_total: toNumber(row.online_sales_total),
+        web_order_count: toNumber(row.online_order_count),
+        web_sales_total: toNumber(row.online_sales_total),
         sales_total: toNumber(row.sales_total),
       })),
     });
@@ -162,13 +180,13 @@ router.get('/rejected-trend', async (req, res, next) => {
     const range = normalizeRange(req.query.range, 'month');
     const rangeClause = buildRangeClause(range, 'created_at');
     const bucketExpr = getBucketExpression(range, 'created_at');
-    const params = [req.effectiveOutletId, req.effectiveTimezone || 'UTC'];
+    const params = [req.effectiveBranchIds, req.effectiveTimezone || DEFAULT_TIMEZONE];
 
     const avgResult = await db.query(
       `
       SELECT COALESCE(AVG(total), 0) AS avg_completed_total
       FROM orders
-      WHERE outlet_id = $1
+      WHERE outlet_id = ANY($1::int[])
         AND deleted_at IS NULL
         AND status = 'completed'
         AND ${rangeClause}
@@ -183,9 +201,9 @@ router.get('/rejected-trend', async (req, res, next) => {
         ${bucketExpr} AS bucket,
         COUNT(*) AS rejected_count
       FROM orders
-      WHERE outlet_id = $1
+      WHERE outlet_id = ANY($1::int[])
         AND deleted_at IS NULL
-        AND status = 'cancelled'
+        AND status IN ('cancelled', 'rejected')
         AND ${rangeClause}
       GROUP BY bucket
       ORDER BY bucket ASC
@@ -220,14 +238,14 @@ router.get('/heatmap', async (req, res, next) => {
         EXTRACT(HOUR FROM timezone($2, created_at)) AS hour,
         COUNT(*) AS order_count
       FROM orders
-      WHERE outlet_id = $1
+      WHERE outlet_id = ANY($1::int[])
         AND deleted_at IS NULL
         AND status = 'completed'
         AND ${rangeClause}
       GROUP BY day_of_week, hour
       ORDER BY day_of_week ASC, hour ASC
       `,
-      [req.effectiveOutletId, req.effectiveTimezone || 'UTC']
+      [req.effectiveBranchIds, req.effectiveTimezone || DEFAULT_TIMEZONE]
     );
 
     return res.json({
@@ -263,7 +281,7 @@ router.get('/top-products', async (req, res, next) => {
       FROM order_items oi
       JOIN orders o ON o.id = oi.order_id
       LEFT JOIN products p ON p.id = oi.product_id
-      WHERE o.outlet_id = $1
+      WHERE o.outlet_id = ANY($1::int[])
         AND o.deleted_at IS NULL
         AND o.status = 'completed'
         AND ${rangeClause}
@@ -271,7 +289,7 @@ router.get('/top-products', async (req, res, next) => {
       ORDER BY unit_sold DESC
       LIMIT $3
       `,
-      [req.effectiveOutletId, req.effectiveTimezone || 'UTC', limit]
+      [req.effectiveBranchIds, req.effectiveTimezone || DEFAULT_TIMEZONE, limit]
     );
 
     return res.json({
@@ -299,13 +317,13 @@ router.get('/channel-contribution', async (req, res, next) => {
         COUNT(*) AS order_count,
         COALESCE(SUM(total), 0) AS total_sales
       FROM orders
-      WHERE outlet_id = $1
+      WHERE outlet_id = ANY($1::int[])
         AND deleted_at IS NULL
         AND status = 'completed'
         AND ${rangeClause}
       GROUP BY order_type
       `,
-      [req.effectiveOutletId, req.effectiveTimezone || 'UTC']
+      [req.effectiveBranchIds, req.effectiveTimezone || DEFAULT_TIMEZONE]
     );
 
     const totalOrders = result.rows.reduce((sum, row) => sum + toNumber(row.order_count), 0);
@@ -336,13 +354,13 @@ router.get('/payment-type', async (req, res, next) => {
         COUNT(*) AS order_count,
         COALESCE(SUM(total), 0) AS total_sales
       FROM orders
-      WHERE outlet_id = $1
+      WHERE outlet_id = ANY($1::int[])
         AND deleted_at IS NULL
         AND status = 'completed'
         AND ${rangeClause}
       GROUP BY payment_method
       `,
-      [req.effectiveOutletId, req.effectiveTimezone || 'UTC']
+      [req.effectiveBranchIds, req.effectiveTimezone || DEFAULT_TIMEZONE]
     );
 
     const totalOrders = result.rows.reduce((sum, row) => sum + toNumber(row.order_count), 0);
@@ -362,3 +380,4 @@ router.get('/payment-type', async (req, res, next) => {
 });
 
 module.exports = router;
+

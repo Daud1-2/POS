@@ -12,6 +12,32 @@ describe('catalog inventory integration', () => {
 
   test('uses outlet stock override for completed order deduction', async () => {
     const query = jest.fn(async (sql, params) => {
+      if (sql.includes('FROM branches b')) {
+        return {
+          rows: [
+            {
+              branch_id: 1,
+              branch_name: 'Main Branch',
+              branch_timezone: 'UTC',
+              branch_is_active: true,
+              is_open: true,
+              accepting_orders: true,
+              maintenance_mode: false,
+              temporary_closed: false,
+              enforce_working_hours: false,
+              working_hours: {
+                monday: { open: '09:00', close: '22:00' },
+                tuesday: { open: '09:00', close: '22:00' },
+                wednesday: { open: '09:00', close: '22:00' },
+                thursday: { open: '09:00', close: '22:00' },
+                friday: { open: '09:00', close: '22:00' },
+                saturday: { open: '09:00', close: '22:00' },
+                sunday: { open: '09:00', close: '22:00' },
+              },
+            },
+          ],
+        };
+      }
       if (sql.includes('FROM products p')) {
         return {
           rows: [
@@ -80,6 +106,32 @@ describe('catalog inventory integration', () => {
 
   test('rolls back when stock is insufficient', async () => {
     const query = jest.fn(async (sql) => {
+      if (sql.includes('FROM branches b')) {
+        return {
+          rows: [
+            {
+              branch_id: 1,
+              branch_name: 'Main Branch',
+              branch_timezone: 'UTC',
+              branch_is_active: true,
+              is_open: true,
+              accepting_orders: true,
+              maintenance_mode: false,
+              temporary_closed: false,
+              enforce_working_hours: false,
+              working_hours: {
+                monday: { open: '09:00', close: '22:00' },
+                tuesday: { open: '09:00', close: '22:00' },
+                wednesday: { open: '09:00', close: '22:00' },
+                thursday: { open: '09:00', close: '22:00' },
+                friday: { open: '09:00', close: '22:00' },
+                saturday: { open: '09:00', close: '22:00' },
+                sunday: { open: '09:00', close: '22:00' },
+              },
+            },
+          ],
+        };
+      }
       if (sql.includes('FROM products p')) {
         return {
           rows: [

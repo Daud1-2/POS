@@ -4,6 +4,8 @@ import { account } from '../services/appwrite';
 import DoodleBackground from '../components/DoodleBackground';
 import badge from '../assets/orderly-logo.png';
 
+const WEB_AUTH_SESSION_KEY = 'posWebAuthActive';
+
 function Login() {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
@@ -14,18 +16,21 @@ function Login() {
     event.preventDefault();
     setStatus('Working...');
     try {
-      // If already logged in, just go to home
+      // If already logged in, go to cashier
       try {
         await account.get();
-        navigate('/home');
+        sessionStorage.setItem(WEB_AUTH_SESSION_KEY, '1');
+        navigate('/cashier');
         return;
       } catch (err) {
         // Not logged in, continue
       }
       await account.createEmailPasswordSession({ email, password });
       setStatus('Signed in');
-      navigate('/home');
+      sessionStorage.setItem(WEB_AUTH_SESSION_KEY, '1');
+      navigate('/cashier');
     } catch (err) {
+      sessionStorage.removeItem(WEB_AUTH_SESSION_KEY);
       setStatus('Credentials are incorrect');
     }
   };

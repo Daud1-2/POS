@@ -8,11 +8,12 @@ const navItems = [
     label: 'Orders',
     path: '/orders',
     icon: 'orders',
-    defaultTab: 'live',
+    defaultTab: 'pos_live',
     children: [
-      { label: 'Live Orders', path: '/orders?tab=live', tab: 'live' },
-      { label: 'Pre Orders', path: '/orders?tab=pre', tab: 'pre' },
-      { label: 'Call-in/Phone Orders', path: '/orders?tab=phone', tab: 'phone' },
+      { label: 'POS Live', path: '/orders?tab=pos_live', tab: 'pos_live' },
+      { label: 'Online Live', path: '/orders?tab=online_live', tab: 'online_live' },
+      { label: 'Completed Orders', path: '/orders?tab=completed', tab: 'completed' },
+      { label: 'Exceptions', path: '/orders?tab=exceptions', tab: 'exceptions' },
       { label: 'Order Reviews', path: '/orders?tab=reviews', tab: 'reviews' },
     ],
   },
@@ -25,13 +26,33 @@ const navItems = [
       { label: 'Sections Management', path: '/products?tab=sections', tab: 'sections' },
       { label: 'Items Management', path: '/products?tab=items', tab: 'items' },
       { label: 'Image Gallery', path: '/products?tab=images', tab: 'images' },
-      { label: 'Branch-Wise Toggle', path: '/products?tab=outlets', tab: 'outlets' },
+      { label: 'Branch-Wise Toggle', path: '/products?tab=branches', tab: 'branches' },
     ],
   },
-  { label: 'Discounts', path: '/discounts', icon: 'discounts' },
+  {
+    label: 'Discounts',
+    path: '/discounts',
+    icon: 'discounts',
+    defaultTab: 'promo',
+    children: [
+      { label: 'Promo Codes', path: '/discounts?tab=promo', tab: 'promo' },
+      { label: 'Bulk Section Discounts', path: '/discounts?tab=bulk', tab: 'bulk' },
+    ],
+  },
   { label: 'Customers', path: '/customers', icon: 'customers' },
-  { label: 'SMS Campaigns', path: '/sms', icon: 'sms' },
-  { label: 'Reporting', path: '/reporting', icon: 'reporting' },
+  {
+    label: 'Reporting',
+    path: '/reporting',
+    icon: 'reporting',
+    defaultTab: 'revenue',
+    children: [
+      { label: 'Revenue Analytics', path: '/reporting?tab=revenue', tab: 'revenue' },
+      { label: 'Payment Analytics', path: '/reporting?tab=payments', tab: 'payments' },
+      { label: 'Product Intelligence', path: '/reporting?tab=products', tab: 'products' },
+      { label: 'Time & Trend Analysis', path: '/reporting?tab=time', tab: 'time' },
+      { label: 'Branch Comparison', path: '/reporting?tab=branches', tab: 'branches' },
+    ],
+  },
   { label: 'Settings', path: '/settings', icon: 'settings' },
 ];
 
@@ -66,11 +87,6 @@ const iconMap = {
       <path d="M4 20c1.5-3 4.5-5 8-5s6.5 2 8 5" />
     </svg>
   ),
-  sms: (
-    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M4 6h16v9H7l-3 3V6z" />
-    </svg>
-  ),
   reporting: (
     <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M4 19h16" />
@@ -89,6 +105,8 @@ const iconMap = {
 const getInitialPinnedState = (location) => ({
   '/orders': location.pathname === '/orders',
   '/products': location.pathname === '/products',
+  '/discounts': location.pathname === '/discounts',
+  '/reporting': location.pathname === '/reporting',
 });
 
 function Sidebar() {
@@ -107,6 +125,8 @@ function Sidebar() {
       ...prev,
       '/orders': location.pathname === '/orders' ? prev['/orders'] : false,
       '/products': location.pathname === '/products' ? prev['/products'] : false,
+      '/discounts': location.pathname === '/discounts' ? prev['/discounts'] : false,
+      '/reporting': location.pathname === '/reporting' ? prev['/reporting'] : false,
     }));
   }, [location.pathname]);
 
@@ -129,7 +149,7 @@ function Sidebar() {
   const isMenuOpen = (item) => Boolean(menuPinnedOpen[item.path] || menuHoverOpen[item.path]);
 
   return (
-    <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:shrink-0 bg-white border-r border-slate-200">
+    <aside className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:z-30 lg:flex lg:flex-col lg:w-64 lg:shrink-0 lg:h-screen lg:overflow-y-auto bg-white border-r border-slate-200">
       <div className="px-6 py-6">
         <Logo size={36} />
       </div>

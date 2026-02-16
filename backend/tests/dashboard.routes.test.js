@@ -20,8 +20,8 @@ describe('dashboard routes', () => {
         rows: [{
           total_sales: '250.00',
           total_orders: '5',
-          web_orders: '2',
-          web_sales: '100.00',
+          online_orders: '2',
+          online_sales: '100.00',
           avg_order_value: '50.00',
           highest_order_value: '70.00',
         }],
@@ -30,7 +30,7 @@ describe('dashboard routes', () => {
 
     const res = await request(app)
       .get('/api/dashboard/summary')
-      .query({ range: 'day', outlet_id: 1 });
+      .query({ range: 'day', branch_id: 1 });
 
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({
@@ -45,12 +45,26 @@ describe('dashboard routes', () => {
     });
   });
 
-  test('returns 400 when admin request has no outlet_id', async () => {
+  test('allows admin summary without explicit branch_id (scoped all-branch mode)', async () => {
+    db.query
+      .mockResolvedValueOnce({
+        rows: [{
+          total_sales: '0.00',
+          total_orders: '0',
+          online_orders: '0',
+          online_sales: '0.00',
+          avg_order_value: '0.00',
+          highest_order_value: '0.00',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ count: '0' }] });
+
     const res = await request(app)
       .get('/api/dashboard/summary')
       .set('x-dev-role', 'admin');
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/outlet_id is required/i);
+    expect(res.status).toBe(200);
+    expect(res.body.data.total_sales).toBe(0);
   });
 });
+

@@ -56,6 +56,98 @@ const normalizeString = (value, fieldName, { required = false, max = 255 } = {})
   return text;
 };
 
+const normalizeAddonGroups = (value, { required = false } = {}) => {
+  if (value === undefined) {
+    if (required) return [];
+    return null;
+  }
+
+  let parsed = value;
+  if (typeof parsed === 'string') {
+    const raw = parsed.trim();
+    if (!raw) return [];
+    try {
+      parsed = JSON.parse(raw);
+    } catch (_) {
+      throw new CatalogValidationError('addon_groups must be valid JSON');
+    }
+  }
+
+  if (parsed === null) return [];
+  if (!Array.isArray(parsed)) {
+    throw new CatalogValidationError('addon_groups must be an array');
+  }
+
+  return parsed.map((group, groupIndex) => {
+    if (!group || typeof group !== 'object' || Array.isArray(group)) {
+      throw new CatalogValidationError(`addon_groups[${groupIndex}] must be an object`);
+    }
+
+    const label = normalizeString(group.label || group.name, `addon_groups[${groupIndex}].label`, {
+      required: true,
+      max: 80,
+    });
+    const id = normalizeString(group.id, `addon_groups[${groupIndex}].id`, { max: 80 }) || `group_${groupIndex + 1}`;
+    const requiredGroup = toBool(group.required, false);
+    const multi = toBool(group.multi, false);
+    const minSelectRaw = group.min_select === undefined || group.min_select === null || group.min_select === ''
+      ? null
+      : Number(group.min_select);
+    const maxSelectRaw = group.max_select === undefined || group.max_select === null || group.max_select === ''
+      ? null
+      : Number(group.max_select);
+    const minSelect = Number.isInteger(minSelectRaw) && minSelectRaw >= 0
+      ? minSelectRaw
+      : requiredGroup
+        ? 1
+        : 0;
+    const maxSelect = Number.isInteger(maxSelectRaw) && maxSelectRaw > 0 ? maxSelectRaw : null;
+
+    const optionsRaw = Array.isArray(group.options) ? group.options : [];
+    if (!optionsRaw.length) {
+      throw new CatalogValidationError(`addon_groups[${groupIndex}].options is required`);
+    }
+
+    const options = optionsRaw.map((option, optionIndex) => {
+      if (!option || typeof option !== 'object' || Array.isArray(option)) {
+        throw new CatalogValidationError(`addon_groups[${groupIndex}].options[${optionIndex}] must be an object`);
+      }
+      const optionLabel = normalizeString(
+        option.label || option.name,
+        `addon_groups[${groupIndex}].options[${optionIndex}].label`,
+        { required: true, max: 80 }
+      );
+      const optionId =
+        normalizeString(
+          option.id,
+          `addon_groups[${groupIndex}].options[${optionIndex}].id`,
+          { max: 80 }
+        ) || `option_${groupIndex + 1}_${optionIndex + 1}`;
+      const priceDelta = toMoney(
+        option.price_delta ?? option.price ?? option.price_delta_amount ?? 0,
+        `addon_groups[${groupIndex}].options[${optionIndex}].price_delta`
+      ) ?? 0;
+
+      return {
+        id: optionId,
+        label: optionLabel,
+        price_delta: priceDelta,
+        is_default: toBool(option.is_default, false),
+      };
+    });
+
+    return {
+      id,
+      label,
+      required: requiredGroup,
+      multi,
+      min_select: minSelect,
+      max_select: maxSelect,
+      options,
+    };
+  });
+};
+
 const isUuid = (value) =>
   typeof value === 'string' &&
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -165,6 +257,7 @@ const mapProductRow = (row) => ({
   barcode: row.barcode,
   base_price: Number(row.base_price),
   cost_price: row.cost_price === null ? null : Number(row.cost_price),
+  profit_value: Number(row.profit_value || 0),
   tax_rate: Number(row.tax_rate),
   is_active: row.is_active,
   track_inventory: row.track_inventory,
@@ -219,7 +312,7 @@ const getCompatProducts = async ({ outletId }) => {
 const listSections = async ({ outletId }) => {
   const result = await db.query(
     `
-    SELECT id, name, description, display_order, is_active, outlet_id, created_at, updated_at
+    SELECT id, name, description, display_order, is_active, addon_groups, outlet_id, created_at, updated_at
     FROM sections
     WHERE deleted_at IS NULL
       AND (outlet_id IS NULL OR outlet_id = $1)
@@ -235,16 +328,20 @@ const createSection = async ({ outletId, payload }) => {
   const description = normalizeString(payload.description, 'description', { max: 1000 });
   const displayOrder = Number.isInteger(payload.display_order) ? payload.display_order : 0;
   const isActive = toBool(payload.is_active, true);
-  const requestedOutlet = payload.outlet_id === null ? null : toPositiveInt(payload.outlet_id);
-  const scopeOutletId = requestedOutlet === null ? null : requestedOutlet || outletId;
+  const addonGroups = normalizeAddonGroups(payload.addon_groups, { required: true });
+  // Default to global sections so items are usable across all branches.
+  const scopeOutletId =
+    payload.outlet_id === undefined || payload.outlet_id === null
+      ? null
+      : toPositiveInt(payload.outlet_id);
 
   const result = await db.query(
     `
-    INSERT INTO sections (name, description, display_order, is_active, outlet_id, created_at, updated_at)
-    VALUES ($1, $2, $3, $4, $5, now(), now())
-    RETURNING id, name, description, display_order, is_active, outlet_id, created_at, updated_at
+    INSERT INTO sections (name, description, display_order, is_active, addon_groups, outlet_id, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5::jsonb, $6, now(), now())
+    RETURNING id, name, description, display_order, is_active, addon_groups, outlet_id, created_at, updated_at
     `,
-    [name, description, displayOrder, isActive, scopeOutletId]
+    [name, description, displayOrder, isActive, JSON.stringify(addonGroups), scopeOutletId]
   );
   return result.rows[0];
 };
@@ -270,6 +367,7 @@ const updateSection = async ({ sectionId, payload, outletId }) => {
     payload.description !== undefined ? normalizeString(payload.description, 'description', { max: 1000 }) : null;
   const displayOrder = payload.display_order !== undefined ? Number(payload.display_order) : null;
   const isActive = payload.is_active !== undefined ? toBool(payload.is_active, true) : null;
+  const addonGroups = payload.addon_groups !== undefined ? normalizeAddonGroups(payload.addon_groups) : null;
 
   if (displayOrder !== null && !Number.isInteger(displayOrder)) {
     throw new CatalogValidationError('display_order must be an integer');
@@ -283,11 +381,12 @@ const updateSection = async ({ sectionId, payload, outletId }) => {
       description = COALESCE($3, description),
       display_order = COALESCE($4, display_order),
       is_active = COALESCE($5, is_active),
+      addon_groups = COALESCE($6::jsonb, addon_groups),
       updated_at = now()
     WHERE id = $1
-    RETURNING id, name, description, display_order, is_active, outlet_id, created_at, updated_at
+    RETURNING id, name, description, display_order, is_active, addon_groups, outlet_id, created_at, updated_at
     `,
-    [sectionId, name, description, displayOrder, isActive]
+    [sectionId, name, description, displayOrder, isActive, addonGroups ? JSON.stringify(addonGroups) : null]
   );
   return result.rows[0];
 };
@@ -418,6 +517,7 @@ const listItems = async ({
       p.barcode,
       p.base_price,
       p.cost_price,
+      p.profit_value,
       p.tax_rate,
       p.is_active,
       p.track_inventory,
@@ -475,6 +575,7 @@ const getProductByUid = async ({ productUid }) => {
       p.barcode,
       p.base_price,
       p.cost_price,
+      p.profit_value,
       p.section_id,
       s.name AS section_name,
       p.tax_rate,
@@ -498,6 +599,7 @@ const getProductByUid = async ({ productUid }) => {
     id: Number(result.rows[0].id),
     base_price: Number(result.rows[0].base_price),
     cost_price: result.rows[0].cost_price === null ? null : Number(result.rows[0].cost_price),
+    profit_value: Number(result.rows[0].profit_value || 0),
     tax_rate: Number(result.rows[0].tax_rate),
     stock_quantity: Number(result.rows[0].stock_quantity),
   };
@@ -510,6 +612,7 @@ const createItem = async ({ outletId, payload }) => {
   const barcode = normalizeString(payload.barcode, 'barcode', { max: 120 });
   const basePrice = toMoney(payload.base_price ?? payload.price, 'base_price', { required: true });
   const costPrice = toMoney(payload.cost_price, 'cost_price');
+  const profitValue = toMoney(payload.profit_value, 'profit_value') ?? 0;
   const taxRate = toMoney(payload.tax_rate, 'tax_rate') ?? 0;
   const stockQuantity = toPositiveInt(payload.stock_quantity ?? payload.stock) ?? 0;
   const isActive = toBool(payload.is_active, true);
@@ -517,19 +620,79 @@ const createItem = async ({ outletId, payload }) => {
   const sectionId = payload.section_id || (await getDefaultSectionId(outletId));
   await assertSectionExists(sectionId, outletId);
 
-  const result = await db.query(
-    `
-    INSERT INTO products (
-      name, description, sku, barcode, base_price, cost_price, section_id, tax_rate,
-      is_active, track_inventory, stock_quantity, created_at, updated_at
-    )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), now())
-    RETURNING product_uid
-    `,
-    [name, description, sku, barcode, basePrice, costPrice, sectionId, taxRate, isActive, trackInventory, stockQuantity]
-  );
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `
+      INSERT INTO products (
+        name, description, sku, barcode, base_price, cost_price, profit_value, section_id, tax_rate,
+        is_active, track_inventory, stock_quantity, created_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), now())
+      RETURNING id, product_uid
+      `,
+      [
+        name,
+        description,
+        sku,
+        barcode,
+        basePrice,
+        costPrice,
+        profitValue,
+        sectionId,
+        taxRate,
+        isActive,
+        trackInventory,
+        stockQuantity,
+      ]
+    );
 
-  return getProductByUid({ productUid: result.rows[0].product_uid });
+    const productId = Number(result.rows[0]?.id || 0);
+    const productUid = result.rows[0]?.product_uid;
+
+    if (productId > 0) {
+      try {
+        await client.query(
+          `
+          INSERT INTO product_outlet_settings (
+            product_id,
+            outlet_id,
+            is_available,
+            price_override,
+            stock_override,
+            created_at,
+            updated_at
+          )
+          SELECT
+            $1,
+            b.id,
+            TRUE,
+            NULL,
+            NULL,
+            now(),
+            now()
+          FROM branches b
+          WHERE b.deleted_at IS NULL
+            AND b.is_active = TRUE
+          `,
+          [productId]
+        );
+      } catch (branchErr) {
+        if (branchErr?.code !== '42P01') {
+          throw branchErr;
+        }
+      }
+    }
+
+    await client.query('COMMIT');
+    return getProductByUid({ productUid });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 };
 
 const updateItem = async ({ productUid, payload, outletId }) => {
@@ -541,6 +704,7 @@ const updateItem = async ({ productUid, payload, outletId }) => {
   const barcode = payload.barcode !== undefined ? normalizeString(payload.barcode, 'barcode', { max: 120 }) : null;
   const basePrice = payload.base_price !== undefined ? toMoney(payload.base_price, 'base_price') : null;
   const costPrice = payload.cost_price !== undefined ? toMoney(payload.cost_price, 'cost_price') : null;
+  const profitValue = payload.profit_value !== undefined ? toMoney(payload.profit_value, 'profit_value') : null;
   const taxRate = payload.tax_rate !== undefined ? toMoney(payload.tax_rate, 'tax_rate') : null;
   const trackInventory = payload.track_inventory !== undefined ? toBool(payload.track_inventory, true) : null;
   const isActive = payload.is_active !== undefined ? toBool(payload.is_active, true) : null;
@@ -570,11 +734,12 @@ const updateItem = async ({ productUid, payload, outletId }) => {
       barcode = COALESCE($5, barcode),
       base_price = COALESCE($6, base_price),
       cost_price = COALESCE($7, cost_price),
-      section_id = COALESCE($8, section_id),
-      tax_rate = COALESCE($9, tax_rate),
-      track_inventory = COALESCE($10, track_inventory),
-      stock_quantity = COALESCE($11, stock_quantity),
-      is_active = COALESCE($12, is_active),
+      profit_value = COALESCE($8, profit_value),
+      section_id = COALESCE($9, section_id),
+      tax_rate = COALESCE($10, tax_rate),
+      track_inventory = COALESCE($11, track_inventory),
+      stock_quantity = COALESCE($12, stock_quantity),
+      is_active = COALESCE($13, is_active),
       updated_at = now()
     WHERE id = $1
     `,
@@ -586,6 +751,7 @@ const updateItem = async ({ productUid, payload, outletId }) => {
       barcode,
       basePrice,
       costPrice,
+      profitValue,
       sectionId,
       taxRate,
       trackInventory,
@@ -823,7 +989,7 @@ const softDeleteImage = async ({ productUid, imageId }) => {
   }
 };
 
-const listOutletSettings = async ({ productUid, outletId }) => {
+const listBranchSettings = async ({ productUid, branchId }) => {
   const product = await getProductByUid({ productUid });
   const result = await db.query(
     `
@@ -834,12 +1000,17 @@ const listOutletSettings = async ({ productUid, outletId }) => {
       AND deleted_at IS NULL
     LIMIT 1
     `,
-    [product.id, outletId]
+    [product.id, branchId]
   );
-  return result.rows[0] || null;
+  const row = result.rows[0] || null;
+  if (!row) return null;
+  return {
+    ...row,
+    branch_id: Number(row.outlet_id),
+  };
 };
 
-const upsertOutletSetting = async ({ productUid, outletId, payload }) => {
+const upsertBranchSetting = async ({ productUid, branchId, payload }) => {
   const product = await getProductByUid({ productUid });
   const isAvailable = toBool(payload.is_available, true);
   const priceOverride = toMoney(payload.price_override, 'price_override');
@@ -863,7 +1034,7 @@ const upsertOutletSetting = async ({ productUid, outletId, payload }) => {
       AND deleted_at IS NULL
     LIMIT 1
     `,
-    [product.id, outletId]
+    [product.id, branchId]
   );
 
   if (existing.rows[0]) {
@@ -880,7 +1051,10 @@ const upsertOutletSetting = async ({ productUid, outletId, payload }) => {
       `,
       [existing.rows[0].id, isAvailable, priceOverride, stockOverride]
     );
-    return updated.rows[0];
+    return {
+      ...updated.rows[0],
+      branch_id: Number(updated.rows[0].outlet_id),
+    };
   }
 
   const inserted = await db.query(
@@ -891,9 +1065,12 @@ const upsertOutletSetting = async ({ productUid, outletId, payload }) => {
     VALUES ($1, $2, $3, $4, $5, now(), now())
     RETURNING id, product_id, outlet_id, is_available, price_override, stock_override, created_at, updated_at
     `,
-    [product.id, outletId, isAvailable, priceOverride, stockOverride]
+    [product.id, branchId, isAvailable, priceOverride, stockOverride]
   );
-  return inserted.rows[0];
+  return {
+    ...inserted.rows[0],
+    branch_id: Number(inserted.rows[0].outlet_id),
+  };
 };
 
 module.exports = {
@@ -918,8 +1095,8 @@ module.exports = {
   addImage,
   updateImage,
   softDeleteImage,
-  listOutletSettings,
-  upsertOutletSetting,
+  listBranchSettings,
+  upsertBranchSetting,
   getDefaultSectionId,
   runQuery,
 };

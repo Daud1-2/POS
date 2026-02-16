@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 
 const ROLES = new Set(['cashier', 'manager', 'admin']);
+const DEFAULT_TIMEZONE = 'Asia/Karachi';
 
 const toPositiveInt = (value) => {
   const num = Number(value);
@@ -27,12 +28,12 @@ const parsePositiveIntArray = (value) => {
 };
 
 const normalizeTimezone = (timezone) => {
-  if (typeof timezone !== 'string' || !timezone.trim()) return 'UTC';
+  if (typeof timezone !== 'string' || !timezone.trim()) return DEFAULT_TIMEZONE;
   try {
     Intl.DateTimeFormat('en-US', { timeZone: timezone.trim() });
     return timezone.trim();
   } catch (err) {
-    return 'UTC';
+    return DEFAULT_TIMEZONE;
   }
 };
 
@@ -49,19 +50,19 @@ const validateClaims = (claims) => {
   };
 
   if (role === 'admin') {
-    const outletIds = parsePositiveIntArray(claims?.outlet_ids);
-    if (!outletIds) {
-      return { error: 'Admin token must include outlet_ids' };
+    const branchIds = parsePositiveIntArray(claims?.branch_ids ?? claims?.outlet_ids);
+    if (!branchIds) {
+      return { error: 'Admin token must include branch_ids' };
     }
-    user.outlet_ids = outletIds;
+    user.branch_ids = branchIds;
     return { user };
   }
 
-  const outletId = toPositiveInt(claims?.outlet_id);
-  if (!outletId) {
-    return { error: 'Cashier/manager token must include outlet_id' };
+  const branchId = toPositiveInt(claims?.branch_id ?? claims?.outlet_id);
+  if (!branchId) {
+    return { error: 'Cashier/manager token must include branch_id' };
   }
-  user.outlet_id = outletId;
+  user.branch_id = branchId;
   return { user };
 };
 
@@ -73,17 +74,18 @@ const allowDevBypass = () => {
 
 const buildDevClaims = (req) => {
   const role = req.header('x-dev-role') || 'admin';
-  const outletIdFromHeader = req.header('x-dev-outlet-id');
-  const outletIdFromQuery = req.query.outlet_id;
-  const fallbackOutlet = outletIdFromHeader || outletIdFromQuery || '1';
-  const outletIdsRaw = req.header('x-dev-outlet-ids') || fallbackOutlet;
+  const branchIdFromHeader = req.header('x-dev-branch-id');
+  const branchIdFromQuery = req.query.branch_id;
+  const fallbackBranch = branchIdFromHeader || branchIdFromQuery || '1';
+  const branchIdsRaw =
+    req.header('x-dev-branch-ids') || fallbackBranch;
 
   return {
     sub: req.header('x-dev-sub') || 'dev-user',
     role,
-    outlet_id: fallbackOutlet,
-    outlet_ids: outletIdsRaw,
-    timezone: req.header('x-dev-timezone') || 'UTC',
+    branch_id: fallbackBranch,
+    branch_ids: branchIdsRaw,
+    timezone: req.header('x-dev-timezone') || DEFAULT_TIMEZONE,
   };
 };
 

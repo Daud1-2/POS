@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  getOutletId,
+  getBranchId,
   getSections,
   createSection,
   updateSection,
@@ -16,15 +16,16 @@ import {
   uploadProductImage,
   updateProductImage,
   deleteProductImage,
-  getProductOutletSetting,
-  upsertProductOutletSetting,
+  getProductBranchSetting,
+  upsertProductBranchSetting,
 } from '../services/products';
+import { getBranchDisplayLabel } from '../services/settings';
 
 const TABS = [
   { key: 'sections', label: 'Sections Management' },
   { key: 'items', label: 'Items Management' },
   { key: 'images', label: 'Image Gallery' },
-  { key: 'outlets', label: 'Branch-Wise Toggle' },
+  { key: 'branches', label: 'Branch-Wise Toggle' },
 ];
 
 const ITEM_FORM = {
@@ -32,18 +33,92 @@ const ITEM_FORM = {
   sku: '',
   section_id: '',
   base_price: '',
+  profit_value: '',
   stock_quantity: '',
   description: '',
   track_inventory: true,
   is_active: true,
 };
 
-const SECTION_FORM = {
+const createSectionForm = () => ({
   name: '',
   description: '',
   display_order: 0,
   is_active: true,
+  addon_groups: [],
+});
+
+const normalizeSectionAddonGroups = (value) => {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((group, groupIndex) => {
+      const label = String(group?.label || group?.name || '').trim();
+      const id = String(group?.id || '').trim() || `group_${groupIndex + 1}`;
+      if (!label) return null;
+
+      const options = Array.isArray(group?.options)
+        ? group.options
+            .map((option, optionIndex) => {
+              const optionLabel = String(option?.label || option?.name || '').trim();
+              if (!optionLabel) return null;
+              const optionId =
+                String(option?.id || '').trim() || `option_${groupIndex + 1}_${optionIndex + 1}`;
+              const parsedPrice = Number(option?.price_delta ?? option?.price ?? 0);
+              return {
+                id: optionId,
+                label: optionLabel,
+                price_delta: Number.isFinite(parsedPrice) ? Number(parsedPrice.toFixed(2)) : 0,
+                is_default: Boolean(option?.is_default),
+              };
+            })
+            .filter(Boolean)
+        : [];
+
+      if (!options.length) return null;
+
+      const minSelectRaw = Number(group?.min_select);
+      const minSelect = Number.isInteger(minSelectRaw) && minSelectRaw >= 0 ? minSelectRaw : 0;
+      const maxSelectRaw = Number(group?.max_select);
+      const maxSelect = Number.isInteger(maxSelectRaw) && maxSelectRaw > 0 ? maxSelectRaw : null;
+
+      return {
+        id,
+        label,
+        required: Boolean(group?.required),
+        multi: Boolean(group?.multi),
+        min_select: minSelect,
+        max_select: maxSelect,
+        options,
+      };
+    })
+    .filter(Boolean);
 };
+
+const mapSectionToForm = (section = {}) => ({
+  name: section.name || '',
+  description: section.description || '',
+  display_order: Number(section.display_order || 0),
+  is_active: Boolean(section.is_active),
+  addon_groups: normalizeSectionAddonGroups(section.addon_groups || []),
+});
+
+const createEmptyAddonOption = () => ({
+  id: '',
+  label: '',
+  price_delta: 0,
+  is_default: false,
+});
+
+const createEmptyAddonGroup = () => ({
+  id: '',
+  label: '',
+  required: false,
+  multi: false,
+  min_select: 0,
+  max_select: '',
+  options: [createEmptyAddonOption()],
+});
 
 const formatMoney = (v) => `PKR ${Number(v || 0).toLocaleString()}`;
 
@@ -51,13 +126,14 @@ function Products() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get('tab');
   const activeTab = TABS.some((entry) => entry.key === tab) ? tab : 'items';
-  const outletId = getOutletId();
+  const branchId = getBranchId();
+  const branchLabel = getBranchDisplayLabel(branchId);
 
   const [flash, setFlash] = useState('');
   const [busy, setBusy] = useState(false);
 
   const [sections, setSections] = useState([]);
-  const [sectionForm, setSectionForm] = useState(SECTION_FORM);
+  const [sectionForm, setSectionForm] = useState(() => createSectionForm());
   const [editingSectionId, setEditingSectionId] = useState('');
 
   const [itemsResponse, setItemsResponse] = useState({
@@ -73,7 +149,7 @@ function Products() {
   const [imageUrl, setImageUrl] = useState('');
   const [imageFile, setImageFile] = useState(null);
 
-  const [outletForm, setOutletForm] = useState({
+  const [branchForm, setBranchForm] = useState({
     is_available: true,
     price_override: '',
     stock_override: '',
@@ -106,15 +182,15 @@ function Products() {
     setImages(data);
   }, [selectedProductUid]);
 
-  const loadOutlet = useCallback(async () => {
+  const loadBranch = useCallback(async () => {
     if (!selectedProductUid) return;
-    const data = await getProductOutletSetting(selectedProductUid, outletId);
-    setOutletForm({
+    const data = await getProductBranchSetting(selectedProductUid, branchId);
+    setBranchForm({
       is_available: data?.is_available ?? true,
       price_override: data?.price_override ?? '',
       stock_override: data?.stock_override ?? '',
     });
-  }, [outletId, selectedProductUid]);
+  }, [branchId, selectedProductUid]);
 
   useEffect(() => {
     if (!tab || !TABS.some((entry) => entry.key === tab)) {
@@ -124,26 +200,26 @@ function Products() {
 
   useEffect(() => {
     setBusy(true);
-    Promise.all([loadSections(), loadItems(1, { includeUnavailable: activeTab === 'outlets' })])
+    Promise.all([loadSections(), loadItems(1, { includeUnavailable: activeTab === 'branches' })])
       .catch(() => setFlash('Failed to fetch product catalogue data'))
       .finally(() => setBusy(false));
   }, [activeTab, loadItems, loadSections]);
 
   useEffect(() => {
     if (activeTab === 'images') loadImages().catch(() => setFlash('Failed to load images'));
-    if (activeTab === 'outlets') loadOutlet().catch(() => setFlash('Failed to load outlet settings'));
-  }, [activeTab, loadImages, loadOutlet]);
+    if (activeTab === 'branches') loadBranch().catch(() => setFlash('Failed to load branch settings'));
+  }, [activeTab, loadImages, loadBranch]);
 
   useEffect(() => {
-    if (!['items', 'outlets'].includes(activeTab)) return undefined;
+    if (!['items', 'branches'].includes(activeTab)) return undefined;
     const timer = setInterval(() => {
       loadItems(itemsResponse.meta.page || 1, {
-        includeUnavailable: activeTab === 'outlets',
+        includeUnavailable: activeTab === 'branches',
       }).catch(() => {});
-      if (activeTab === 'outlets') loadOutlet().catch(() => {});
+      if (activeTab === 'branches') loadBranch().catch(() => {});
     }, 15000);
     return () => clearInterval(timer);
-  }, [activeTab, itemsResponse.meta.page, loadItems, loadOutlet]);
+  }, [activeTab, itemsResponse.meta.page, loadItems, loadBranch]);
 
   const sectionOptions = useMemo(() => sections.filter((section) => section.is_active), [sections]);
   const selectedItem = useMemo(
@@ -158,14 +234,81 @@ function Products() {
 
   const resetSectionForm = () => {
     setEditingSectionId('');
-    setSectionForm(SECTION_FORM);
+    setSectionForm(createSectionForm());
+  };
+
+  const addAddonGroup = () => {
+    setSectionForm((prev) => ({
+      ...prev,
+      addon_groups: [...(prev.addon_groups || []), createEmptyAddonGroup()],
+    }));
+  };
+
+  const removeAddonGroup = (groupIndex) => {
+    setSectionForm((prev) => ({
+      ...prev,
+      addon_groups: (prev.addon_groups || []).filter((_, index) => index !== groupIndex),
+    }));
+  };
+
+  const updateAddonGroupField = (groupIndex, field, value) => {
+    setSectionForm((prev) => ({
+      ...prev,
+      addon_groups: (prev.addon_groups || []).map((group, index) =>
+        index === groupIndex ? { ...group, [field]: value } : group
+      ),
+    }));
+  };
+
+  const addAddonOption = (groupIndex) => {
+    setSectionForm((prev) => ({
+      ...prev,
+      addon_groups: (prev.addon_groups || []).map((group, index) =>
+        index === groupIndex
+          ? { ...group, options: [...(group.options || []), createEmptyAddonOption()] }
+          : group
+      ),
+    }));
+  };
+
+  const removeAddonOption = (groupIndex, optionIndex) => {
+    setSectionForm((prev) => ({
+      ...prev,
+      addon_groups: (prev.addon_groups || []).map((group, index) => {
+        if (index !== groupIndex) return group;
+        const filtered = (group.options || []).filter((_, itemIndex) => itemIndex !== optionIndex);
+        return {
+          ...group,
+          options: filtered.length ? filtered : [createEmptyAddonOption()],
+        };
+      }),
+    }));
+  };
+
+  const updateAddonOptionField = (groupIndex, optionIndex, field, value) => {
+    setSectionForm((prev) => ({
+      ...prev,
+      addon_groups: (prev.addon_groups || []).map((group, index) => {
+        if (index !== groupIndex) return group;
+        return {
+          ...group,
+          options: (group.options || []).map((option, itemIndex) =>
+            itemIndex === optionIndex ? { ...option, [field]: value } : option
+          ),
+        };
+      }),
+    }));
   };
 
   const submitSection = async (event) => {
     event.preventDefault();
     setBusy(true);
     try {
-      const payload = { ...sectionForm, display_order: Number(sectionForm.display_order || 0) };
+      const payload = {
+        ...sectionForm,
+        display_order: Number(sectionForm.display_order || 0),
+        addon_groups: normalizeSectionAddonGroups(sectionForm.addon_groups || []),
+      };
       if (editingSectionId) await updateSection(editingSectionId, payload);
       else await createSection(payload);
       resetSectionForm();
@@ -190,6 +333,7 @@ function Products() {
       const payload = {
         ...itemForm,
         base_price: Number(itemForm.base_price),
+        profit_value: Number(itemForm.profit_value || 0),
         stock_quantity: Number(itemForm.stock_quantity || 0),
       };
       if (editingItemUid) await updateItem(editingItemUid, payload);
@@ -253,19 +397,19 @@ function Products() {
     }
   };
 
-  const saveOutletSettings = async (event) => {
+  const saveBranchSettings = async (event) => {
     event.preventDefault();
     if (!selectedProductUid) return;
     try {
-      await upsertProductOutletSetting(selectedProductUid, outletId, {
-        is_available: outletForm.is_available,
-        price_override: outletForm.price_override === '' ? null : Number(outletForm.price_override),
-        stock_override: outletForm.stock_override === '' ? null : Number(outletForm.stock_override),
+      await upsertProductBranchSetting(selectedProductUid, branchId, {
+        is_available: branchForm.is_available,
+        price_override: branchForm.price_override === '' ? null : Number(branchForm.price_override),
+        stock_override: branchForm.stock_override === '' ? null : Number(branchForm.stock_override),
       });
-      await loadItems(itemsResponse.meta.page || 1, { includeUnavailable: activeTab === 'outlets' });
-      setFlash('Outlet settings saved');
+      await loadItems(itemsResponse.meta.page || 1, { includeUnavailable: activeTab === 'branches' });
+      setFlash('Branch settings saved');
     } catch (err) {
-      setFlash(err?.response?.data?.error || 'Failed to save outlet settings');
+      setFlash(err?.response?.data?.error || 'Failed to save branch settings');
     }
   };
 
@@ -275,7 +419,7 @@ function Products() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold">Products Catalogue</h1>
-            <p className="text-sm text-slate-500">Outlet #{outletId}</p>
+            <p className="text-sm text-slate-500">{branchLabel}</p>
           </div>
           <div className="flex flex-wrap gap-2">
             {TABS.map((entry) => (
@@ -298,26 +442,223 @@ function Products() {
       </div>
 
       {activeTab === 'sections' && (
-        <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
-          <form onSubmit={submitSection} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-soft space-y-2">
+        <div className="grid gap-4 lg:grid-cols-[520px_1fr]">
+          <form
+            onSubmit={submitSection}
+            className="rounded-2xl border border-slate-200 bg-white p-4 shadow-soft space-y-3"
+          >
             <h2 className="font-semibold">{editingSectionId ? 'Edit Section' : 'Create Section'}</h2>
-            <input value={sectionForm.name} onChange={(e) => setSectionForm((p) => ({ ...p, name: e.target.value }))} placeholder="Name" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
-            <textarea value={sectionForm.description} onChange={(e) => setSectionForm((p) => ({ ...p, description: e.target.value }))} placeholder="Description" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm min-h-[70px]" />
-            <input type="number" value={sectionForm.display_order} onChange={(e) => setSectionForm((p) => ({ ...p, display_order: Number(e.target.value) }))} placeholder="Display order" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
-            <button type="submit" disabled={busy} className="w-full rounded-lg bg-brandYellow py-2 text-sm font-medium">Save Section</button>
-            {editingSectionId && <button type="button" onClick={resetSectionForm} className="w-full rounded-lg border border-slate-200 py-2 text-sm">Cancel Edit</button>}
+            <input
+              value={sectionForm.name}
+              onChange={(e) => setSectionForm((p) => ({ ...p, name: e.target.value }))}
+              placeholder="Name"
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            />
+            <textarea
+              value={sectionForm.description}
+              onChange={(e) => setSectionForm((p) => ({ ...p, description: e.target.value }))}
+              placeholder="Description"
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm min-h-[70px]"
+            />
+            <input
+              type="number"
+              value={sectionForm.display_order}
+              onChange={(e) => setSectionForm((p) => ({ ...p, display_order: Number(e.target.value) }))}
+              placeholder="Display order"
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            />
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-800">Section Add-ons</h3>
+                <button
+                  type="button"
+                  onClick={addAddonGroup}
+                  className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700"
+                >
+                  Add Group
+                </button>
+              </div>
+              <p className="text-xs text-slate-500">
+                Configure choices for products in this section. Example: burger cheese/sauce, pizza size.
+              </p>
+
+              {(!sectionForm.addon_groups || sectionForm.addon_groups.length === 0) && (
+                <div className="rounded-lg border border-dashed border-slate-300 bg-white p-3 text-xs text-slate-500">
+                  No add-on groups. Click "Add Group" to create one.
+                </div>
+              )}
+
+              {(sectionForm.addon_groups || []).map((group, groupIndex) => (
+                <div key={`${group.id || 'group'}-${groupIndex}`} className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <input
+                      value={group.label || ''}
+                      onChange={(e) => updateAddonGroupField(groupIndex, 'label', e.target.value)}
+                      placeholder="Group label (e.g. Size)"
+                      className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs"
+                    />
+                    <input
+                      value={group.id || ''}
+                      onChange={(e) => updateAddonGroupField(groupIndex, 'id', e.target.value)}
+                      placeholder="Group ID (optional)"
+                      className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs"
+                    />
+                  </div>
+
+                  <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-4">
+                    <label className="text-xs flex items-center gap-1.5 text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(group.required)}
+                        onChange={(e) => updateAddonGroupField(groupIndex, 'required', e.target.checked)}
+                      />
+                      Required
+                    </label>
+                    <label className="text-xs flex items-center gap-1.5 text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(group.multi)}
+                        onChange={(e) => updateAddonGroupField(groupIndex, 'multi', e.target.checked)}
+                      />
+                      Multi select
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={group.min_select ?? 0}
+                      onChange={(e) => {
+                        const value = e.target.value === '' ? 0 : Number(e.target.value);
+                        updateAddonGroupField(groupIndex, 'min_select', Number.isFinite(value) ? value : 0);
+                      }}
+                      placeholder="Min select"
+                      className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs"
+                    />
+                    <input
+                      type="number"
+                      min="1"
+                      value={group.max_select ?? ''}
+                      onChange={(e) => updateAddonGroupField(groupIndex, 'max_select', e.target.value)}
+                      placeholder="Max select (optional)"
+                      className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    {(group.options || []).map((option, optionIndex) => (
+                      <div
+                        key={`${option.id || 'option'}-${optionIndex}`}
+                        className="grid gap-2 sm:grid-cols-[1fr_1fr_120px_auto_auto]"
+                      >
+                        <input
+                          value={option.label || ''}
+                          onChange={(e) => updateAddonOptionField(groupIndex, optionIndex, 'label', e.target.value)}
+                          placeholder="Option label"
+                          className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs"
+                        />
+                        <input
+                          value={option.id || ''}
+                          onChange={(e) => updateAddonOptionField(groupIndex, optionIndex, 'id', e.target.value)}
+                          placeholder="Option ID"
+                          className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs"
+                        />
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={option.price_delta ?? 0}
+                          onChange={(e) =>
+                            updateAddonOptionField(
+                              groupIndex,
+                              optionIndex,
+                              'price_delta',
+                              e.target.value === '' ? 0 : Number(e.target.value)
+                            )
+                          }
+                          placeholder="Price +/-"
+                          className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs"
+                        />
+                        <label className="text-xs flex items-center gap-1 text-slate-600">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(option.is_default)}
+                            onChange={(e) =>
+                              updateAddonOptionField(groupIndex, optionIndex, 'is_default', e.target.checked)
+                            }
+                          />
+                          Default
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => removeAddonOption(groupIndex, optionIndex)}
+                          className="rounded-md border border-rose-200 px-2 py-1 text-[11px] font-medium text-rose-600"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => addAddonOption(groupIndex)}
+                      className="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-700"
+                    >
+                      Add Option
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeAddonGroup(groupIndex)}
+                      className="rounded-md border border-rose-200 px-2 py-1 text-xs font-medium text-rose-600"
+                    >
+                      Remove Group
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <button type="submit" disabled={busy} className="w-full rounded-lg bg-brandYellow py-2 text-sm font-medium">
+              Save Section
+            </button>
+            {editingSectionId && (
+              <button type="button" onClick={resetSectionForm} className="w-full rounded-lg border border-slate-200 py-2 text-sm">
+                Cancel Edit
+              </button>
+            )}
           </form>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-soft space-y-2">
-            {sections.length === 0 ? <div className="text-sm text-slate-500">No sections yet</div> : sections.map((section) => (
-              <div key={section.id} className="flex items-center gap-2 border border-slate-100 rounded-lg p-2">
-                <div className="flex-1">
-                  <div className="text-sm font-medium">{section.name}</div>
-                  <div className="text-xs text-slate-500">Display #{section.display_order}</div>
+            {sections.length === 0 ? (
+              <div className="text-sm text-slate-500">No sections yet</div>
+            ) : (
+              sections.map((section) => (
+                <div key={section.id} className="flex items-center gap-2 border border-slate-100 rounded-lg p-2">
+                  <div className="flex-1">
+                    <div className="text-sm font-medium">{section.name}</div>
+                    <div className="text-xs text-slate-500">
+                      Display #{section.display_order} | Add-on groups {Array.isArray(section.addon_groups) ? section.addon_groups.length : 0}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingSectionId(section.id);
+                      setSectionForm(mapSectionToForm(section));
+                    }}
+                    className="px-2 py-1 border rounded text-xs"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeSection(section.id)}
+                    className="px-2 py-1 border border-rose-200 text-rose-600 rounded text-xs"
+                  >
+                    Delete
+                  </button>
                 </div>
-                <button type="button" onClick={() => { setEditingSectionId(section.id); setSectionForm({ name: section.name || '', description: section.description || '', display_order: section.display_order || 0, is_active: section.is_active }); }} className="px-2 py-1 border rounded text-xs">Edit</button>
-                <button type="button" onClick={() => removeSection(section.id)} className="px-2 py-1 border border-rose-200 text-rose-600 rounded text-xs">Delete</button>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
       )}
@@ -333,8 +674,9 @@ function Products() {
               <h2 className="font-semibold">{editingItemUid ? 'Edit Item' : 'Add Item'}</h2>
               <input value={itemForm.name} onChange={(e) => setItemForm((p) => ({ ...p, name: e.target.value }))} placeholder="Name" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
               <input value={itemForm.sku} onChange={(e) => setItemForm((p) => ({ ...p, sku: e.target.value }))} placeholder="SKU" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 <input type="number" step="0.01" value={itemForm.base_price} onChange={(e) => setItemForm((p) => ({ ...p, base_price: e.target.value }))} placeholder="Base Price" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="number" step="0.01" value={itemForm.profit_value} onChange={(e) => setItemForm((p) => ({ ...p, profit_value: e.target.value }))} placeholder="Profit" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
                 <input type="number" value={itemForm.stock_quantity} onChange={(e) => setItemForm((p) => ({ ...p, stock_quantity: e.target.value }))} placeholder="Stock" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
               </div>
               <select value={itemForm.section_id} onChange={(e) => setItemForm((p) => ({ ...p, section_id: e.target.value }))} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
@@ -352,13 +694,14 @@ function Products() {
                     <th className="text-left p-2">Image</th>
                     <th className="text-left p-2">Details</th>
                     <th className="text-left p-2">Price</th>
+                    <th className="text-left p-2">Profit</th>
                     <th className="text-left p-2">Stock</th>
                     <th className="text-right p-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {itemsResponse.data.length === 0 ? (
-                    <tr><td colSpan={5} className="text-center p-6 text-slate-500">{busy ? 'Loading...' : 'No items found'}</td></tr>
+                    <tr><td colSpan={6} className="text-center p-6 text-slate-500">{busy ? 'Loading...' : 'No items found'}</td></tr>
                   ) : itemsResponse.data.map((item) => (
                     <tr key={item.product_uid} className="border-b border-slate-100">
                       <td className="p-2">
@@ -369,6 +712,7 @@ function Products() {
                         <div className="text-xs text-slate-500">{item.sku}</div>
                       </td>
                       <td className="p-2">{formatMoney(item.effective_price)}</td>
+                      <td className="p-2">{formatMoney(item.profit_value)}</td>
                       <td className="p-2">{item.effective_stock}</td>
                       <td className="p-2">
                         <div className="flex justify-end gap-1">
@@ -420,21 +764,21 @@ function Products() {
         </div>
       )}
 
-      {activeTab === 'outlets' && (
+      {activeTab === 'branches' && (
         <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
-          <form onSubmit={saveOutletSettings} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-soft space-y-2">
-            <h2 className="font-semibold">Outlet Controls</h2>
+          <form onSubmit={saveBranchSettings} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-soft space-y-2">
+            <h2 className="font-semibold">Branch Controls</h2>
             <select value={selectedProductUid} onChange={(e) => setSelectedProductUid(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
               <option value="">Select product</option>
               {itemsResponse.data.map((item) => <option key={item.product_uid} value={item.product_uid}>{item.name}</option>)}
             </select>
             <label className="text-sm flex items-center gap-2">
-              <input type="checkbox" checked={outletForm.is_available} onChange={(e) => setOutletForm((p) => ({ ...p, is_available: e.target.checked }))} />
-              Available for this outlet
+              <input type="checkbox" checked={branchForm.is_available} onChange={(e) => setBranchForm((p) => ({ ...p, is_available: e.target.checked }))} />
+              Available for this branch
             </label>
-            <input type="number" step="0.01" value={outletForm.price_override} onChange={(e) => setOutletForm((p) => ({ ...p, price_override: e.target.value }))} placeholder="Price override" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
-            <input type="number" value={outletForm.stock_override} onChange={(e) => setOutletForm((p) => ({ ...p, stock_override: e.target.value }))} placeholder="Stock override" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
-            <button type="submit" className="w-full rounded-lg bg-brandYellow py-2 text-sm font-medium">Save Outlet Setting</button>
+            <input type="number" step="0.01" value={branchForm.price_override} onChange={(e) => setBranchForm((p) => ({ ...p, price_override: e.target.value }))} placeholder="Price override" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+            <input type="number" value={branchForm.stock_override} onChange={(e) => setBranchForm((p) => ({ ...p, stock_override: e.target.value }))} placeholder="Stock override" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+            <button type="submit" className="w-full rounded-lg bg-brandYellow py-2 text-sm font-medium">Save Branch Setting</button>
           </form>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-soft">
             {selectedItem ? (
@@ -445,7 +789,7 @@ function Products() {
                 <div className="rounded-lg border border-slate-100 p-3"><div className="text-slate-500">Effective Stock</div><div className="font-medium">{selectedItem.effective_stock}</div></div>
               </div>
             ) : (
-              <div className="text-sm text-slate-500">Select a product to see outlet projection.</div>
+              <div className="text-sm text-slate-500">Select a product to see branch projection.</div>
             )}
           </div>
         </div>
@@ -455,3 +799,4 @@ function Products() {
 }
 
 export default Products;
+

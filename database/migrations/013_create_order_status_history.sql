@@ -15,6 +15,39 @@ CREATE TABLE IF NOT EXISTS order_status_history (
 ALTER TABLE order_status_history
 DROP CONSTRAINT IF EXISTS order_status_history_to_status_check;
 
+UPDATE order_status_history
+SET to_status = 'open'
+WHERE to_status IN ('new', 'pending');
+
+UPDATE order_status_history
+SET to_status = 'preparing'
+WHERE to_status = 'accepted';
+
+UPDATE order_status_history
+SET to_status = 'out_for_delivery'
+WHERE to_status = 'on_the_way';
+
+UPDATE order_status_history
+SET to_status = 'completed'
+WHERE to_status = 'delivered';
+
+UPDATE order_status_history
+SET to_status = 'cancelled'
+WHERE to_status IN ('rejected', 'failed');
+
+UPDATE order_status_history
+SET to_status = 'open'
+WHERE to_status IS NULL
+   OR to_status NOT IN (
+     'open',
+     'preparing',
+     'ready',
+     'out_for_delivery',
+     'completed',
+     'cancelled',
+     'refunded'
+   );
+
 ALTER TABLE order_status_history
 ADD CONSTRAINT order_status_history_to_status_check
 CHECK (

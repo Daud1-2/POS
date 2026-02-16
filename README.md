@@ -60,6 +60,10 @@ PGPASSWORD=your_password
 PGSSLMODE=disable
 ```
 
+## API Reference
+
+- Backend API documentation for developers: `docs/API_REFERENCE.md`
+
 2. Run migrations:
 ```powershell
 $env:PGPASSWORD='your_password'

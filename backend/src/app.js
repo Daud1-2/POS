@@ -9,8 +9,15 @@ const productRoutes = require('./routes/products');
 const salesRoutes = require('./routes/sales');
 const dashboardRoutes = require('./routes/dashboard');
 const ordersRoutes = require('./routes/orders');
+const discountsRoutes = require('./routes/discounts');
+const customersRoutes = require('./routes/customers');
+const reportingRoutes = require('./routes/reporting');
+const settingsRoutes = require('./routes/settings');
+const shiftsRoutes = require('./routes/shifts');
 const authClaims = require('./middleware/authClaims');
 const outletScope = require('./middleware/outletScope');
+const reportingScope = require('./middleware/reportingScope');
+const maintenanceGuard = require('./middleware/maintenanceGuard');
 
 const app = express();
 
@@ -33,10 +40,15 @@ app.get('/api/health/db', async (req, res, next) => {
 });
 
 app.use('/api/auth', authRoutes);
-app.use('/api/products', authClaims, outletScope, productRoutes);
-app.use('/api/sales', salesRoutes);
+app.use('/api/settings', authClaims, outletScope, settingsRoutes);
+app.use('/api/products', authClaims, outletScope, maintenanceGuard, productRoutes);
+app.use('/api/sales', authClaims, outletScope, maintenanceGuard, salesRoutes);
 app.use('/api/dashboard', authClaims, outletScope, dashboardRoutes);
-app.use('/api/orders', authClaims, outletScope, ordersRoutes);
+app.use('/api/orders', authClaims, outletScope, maintenanceGuard, ordersRoutes);
+app.use('/api/discounts', authClaims, outletScope, maintenanceGuard, discountsRoutes);
+app.use('/api/customers', authClaims, outletScope, maintenanceGuard, customersRoutes);
+app.use('/api/shifts', authClaims, outletScope, shiftsRoutes);
+app.use('/api/reporting', authClaims, reportingScope, reportingRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err.stack);

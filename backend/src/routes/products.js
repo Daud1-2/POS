@@ -25,8 +25,8 @@ const {
   addImage,
   updateImage,
   softDeleteImage,
-  listOutletSettings,
-  upsertOutletSetting,
+  listBranchSettings,
+  upsertBranchSetting,
   getDefaultSectionId,
 } = require('../services/catalogService');
 
@@ -70,26 +70,33 @@ const ensureRole = (roles) => (req, res, next) => {
   return next();
 };
 
-const resolveScopedOutlet = (req, value) => {
+const resolveScopedBranch = (req, value) => {
   const requested = toPositiveInt(value);
-  if (!requested) {
-    throw new CatalogValidationError('outlet_id must be a positive integer');
-  }
 
   if (!req.user) {
     throw new CatalogValidationError('Missing authenticated user context', 401);
   }
 
   if (req.user.role === 'admin') {
-    const allowed = Array.isArray(req.user.outlet_ids) ? req.user.outlet_ids : [];
+    const allowed = Array.isArray(req.user.branch_ids) ? req.user.branch_ids : [];
+    if (!allowed.length) {
+      throw new CatalogValidationError('Authenticated admin has no branch scope', 403);
+    }
+    if (!requested) {
+      return req.effectiveBranchId || allowed[0];
+    }
     if (!allowed.includes(requested)) {
-      throw new CatalogValidationError('Outlet is not in admin scope', 403);
+      return req.effectiveBranchId || allowed[0];
     }
     return requested;
   }
 
-  if (requested !== req.effectiveOutletId) {
-    throw new CatalogValidationError('Cross-outlet access denied', 403);
+  if (!requested) {
+    throw new CatalogValidationError('branch_id must be a positive integer');
+  }
+
+  if (requested !== req.effectiveBranchId) {
+    throw new CatalogValidationError('Cross-branch access denied', 403);
   }
   return requested;
 };
@@ -119,7 +126,7 @@ const handleCatalogError = (res, err) => {
 router.get(
   '/',
   asyncHandler(async (req, res) => {
-    const data = await getCompatProducts({ outletId: req.effectiveOutletId });
+    const data = await getCompatProducts({ outletId: req.effectiveBranchId });
     return res.json({ data });
   })
 );
@@ -132,7 +139,7 @@ router.get(
     const includeInactive = toBool(req.query.include_inactive, false) && req.user.role !== 'cashier';
     const includeUnavailable = toBool(req.query.include_unavailable, false) && req.user.role !== 'cashier';
     const response = await listItems({
-      outletId: req.effectiveOutletId,
+      outletId: req.effectiveBranchId,
       sectionId: req.query.section_id || null,
       search: req.query.search || null,
       pagination,
@@ -150,7 +157,7 @@ router.post(
   asyncHandler(async (req, res, next) => {
     try {
       const created = await createItem({
-        outletId: req.effectiveOutletId,
+        outletId: req.effectiveBranchId,
         payload: req.body || {},
       });
       return res.status(201).json({ data: created });
@@ -173,7 +180,7 @@ router.patch(
       const updated = await updateItem({
         productUid: req.params.product_uid,
         payload: req.body || {},
-        outletId: req.effectiveOutletId,
+        outletId: req.effectiveBranchId,
       });
       return res.json({ data: updated });
     } catch (err) {
@@ -228,7 +235,7 @@ router.delete(
 router.get(
   '/sections',
   asyncHandler(async (req, res) => {
-    const data = await listSections({ outletId: req.effectiveOutletId });
+    const data = await listSections({ outletId: req.effectiveBranchId });
     return res.json({ data });
   })
 );
@@ -239,7 +246,7 @@ router.post(
   asyncHandler(async (req, res, next) => {
     try {
       const created = await createSection({
-        outletId: req.effectiveOutletId,
+        outletId: req.effectiveBranchId,
         payload: req.body || {},
       });
       return res.status(201).json({ data: created });
@@ -261,7 +268,7 @@ router.patch(
     try {
       await reorderSections({
         items: req.body?.items || [],
-        outletId: req.effectiveOutletId,
+        outletId: req.effectiveBranchId,
       });
       return res.json({ data: { reordered: true } });
     } catch (err) {
@@ -283,7 +290,7 @@ router.patch(
       const updated = await updateSection({
         sectionId: req.params.section_id,
         payload: req.body || {},
-        outletId: req.effectiveOutletId,
+        outletId: req.effectiveBranchId,
       });
       return res.json({ data: updated });
     } catch (err) {
@@ -304,7 +311,7 @@ router.delete(
     try {
       await softDeleteSection({
         sectionId: req.params.section_id,
-        outletId: req.effectiveOutletId,
+        outletId: req.effectiveBranchId,
       });
       return res.json({ data: { section_id: req.params.section_id, deleted: true } });
     } catch (err) {
@@ -430,16 +437,16 @@ router.delete(
   })
 );
 
-// Outlet settings
+// Branch settings
 router.get(
-  '/items/:product_uid/outlets',
+  '/items/:product_uid/branches',
   ensureRole(['manager', 'admin']),
   asyncHandler(async (req, res, next) => {
     try {
-      const outletId = resolveScopedOutlet(req, req.query.outlet_id || req.effectiveOutletId);
-      const data = await listOutletSettings({
+      const branchId = resolveScopedBranch(req, req.query.branch_id || req.effectiveBranchId);
+      const data = await listBranchSettings({
         productUid: req.params.product_uid,
-        outletId,
+        branchId,
       });
       return res.json({ data });
     } catch (err) {
@@ -454,14 +461,14 @@ router.get(
 );
 
 router.put(
-  '/items/:product_uid/outlets/:outlet_id',
+  '/items/:product_uid/branches/:branch_id',
   ensureRole(['manager', 'admin']),
   asyncHandler(async (req, res, next) => {
     try {
-      const outletId = resolveScopedOutlet(req, req.params.outlet_id);
-      const data = await upsertOutletSetting({
+      const branchId = resolveScopedBranch(req, req.params.branch_id);
+      const data = await upsertBranchSetting({
         productUid: req.params.product_uid,
-        outletId,
+        branchId,
         payload: req.body || {},
       });
       return res.json({ data });
@@ -500,7 +507,7 @@ router.get(
       WHERE p.id = $1
         AND p.deleted_at IS NULL
       `,
-      [id, req.effectiveOutletId]
+      [id, req.effectiveBranchId]
     );
     if (!result.rows[0]) {
       return res.status(404).json({ error: 'Product not found' });
@@ -515,9 +522,9 @@ router.post(
   ensureRole(['manager', 'admin']),
   asyncHandler(async (req, res, next) => {
     try {
-      const defaultSectionId = await getDefaultSectionId(req.effectiveOutletId);
+      const defaultSectionId = await getDefaultSectionId(req.effectiveBranchId);
       const product = await createItem({
-        outletId: req.effectiveOutletId,
+        outletId: req.effectiveBranchId,
         payload: {
           name: req.body?.name,
           sku: req.body?.sku,
@@ -568,7 +575,7 @@ router.put(
           stock_quantity: req.body?.stock,
           is_active: req.body?.isActive ?? req.body?.is_active,
         },
-        outletId: req.effectiveOutletId,
+        outletId: req.effectiveBranchId,
       });
       return res.json({ data: mapLegacyResponse(updated) });
     } catch (err) {
@@ -616,3 +623,4 @@ router.delete(
 );
 
 module.exports = router;
+

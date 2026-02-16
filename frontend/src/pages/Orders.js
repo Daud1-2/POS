@@ -1,52 +1,73 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import {
-  getLiveOrders,
-  getPhoneOrders,
-  getPreOrders,
-  getReviewsSummary,
-} from '../services/dashboard';
+import { getOrdersList, getReviewsSummary } from '../services/dashboard';
 
 const TABS = [
-  { key: 'live', label: 'Live Orders' },
-  { key: 'pre', label: 'Pre Orders' },
-  { key: 'phone', label: 'Call / Phone Orders' },
+  { key: 'pos_live', label: 'POS Live' },
+  { key: 'online_live', label: 'Online Live' },
+  { key: 'completed', label: 'Completed' },
+  { key: 'exceptions', label: 'Exceptions' },
   { key: 'reviews', label: 'Order Reviews' },
 ];
 
 const formatCurrency = (value) => `PKR ${Number(value || 0).toLocaleString()}`;
 
+const getTabQueryFilters = (tab) => {
+  if (tab === 'pos_live') {
+    return {
+      channel: 'pos',
+      status: 'pending',
+    };
+  }
+  if (tab === 'online_live') {
+    return {
+      channel: 'online,whatsapp,delivery_platform',
+      status: 'new,accepted,preparing,ready',
+    };
+  }
+  if (tab === 'completed') {
+    return {
+      status: 'completed',
+    };
+  }
+  if (tab === 'exceptions') {
+    return {
+      status: 'cancelled,rejected,refunded',
+    };
+  }
+  return {};
+};
+
 function Orders() {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlTab = searchParams.get('tab');
-  const initialTab = TABS.some((tab) => tab.key === urlTab) ? urlTab : 'live';
+  const initialTab = TABS.some((tab) => tab.key === urlTab) ? urlTab : 'pos_live';
   const [activeTab, setActiveTab] = useState(initialTab);
+  const [search, setSearch] = useState('');
   const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState({ page: 1, page_size: 10, total: 0, total_pages: 0 });
   const [reviewSummary, setReviewSummary] = useState({ average_rating: 0, total_reviews: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const loadData = useCallback(async (tabKey, page = 1) => {
+  const loadData = useCallback(async (tabKey, page = 1, searchTerm = '') => {
     setLoading(true);
     try {
-      if (tabKey === 'live') {
-        const res = await getLiveOrders(page, 10);
-        setRows(res.data || []);
-        setMeta(res.meta || { page: 1, page_size: 10, total: 0, total_pages: 0 });
-      } else if (tabKey === 'pre') {
-        const res = await getPreOrders(page, 10);
-        setRows(res.data || []);
-        setMeta(res.meta || { page: 1, page_size: 10, total: 0, total_pages: 0 });
-      } else if (tabKey === 'phone') {
-        const res = await getPhoneOrders(page, 10);
-        setRows(res.data || []);
-        setMeta(res.meta || { page: 1, page_size: 10, total: 0, total_pages: 0 });
-      } else {
+      if (tabKey === 'reviews') {
         const res = await getReviewsSummary(page, 10);
         setRows(res.data || []);
         setMeta(res.meta || { page: 1, page_size: 10, total: 0, total_pages: 0 });
         setReviewSummary(res.summary || { average_rating: 0, total_reviews: 0 });
+      } else {
+        const queryFilters = getTabQueryFilters(tabKey);
+        const res = await getOrdersList({
+          page,
+          pageSize: 10,
+          search: searchTerm,
+          ...queryFilters,
+        });
+        setRows(res.data || []);
+        setMeta(res.meta || { page: 1, page_size: 10, total: 0, total_pages: 0 });
       }
       setError('');
     } catch (err) {
@@ -57,14 +78,13 @@ function Orders() {
   }, []);
 
   useEffect(() => {
-    loadData(activeTab, 1);
-    const timer = setInterval(() => loadData(activeTab, 1), 15000);
+    loadData(activeTab, 1, search);
+    const timer = setInterval(() => loadData(activeTab, 1, search), 15000);
     return () => clearInterval(timer);
-  }, [activeTab, loadData]);
+  }, [activeTab, loadData, search]);
 
   const hasPrev = meta.page > 1;
   const hasNext = meta.total_pages > meta.page;
-
   const heading = useMemo(() => TABS.find((tab) => tab.key === activeTab)?.label || 'Orders', [activeTab]);
 
   useEffect(() => {
@@ -76,6 +96,7 @@ function Orders() {
 
   const switchTab = (tabKey) => {
     setActiveTab(tabKey);
+    setMeta({ page: 1, page_size: 10, total: 0, total_pages: 0 });
     setSearchParams({ tab: tabKey });
   };
 
@@ -100,6 +121,13 @@ function Orders() {
           ))}
         </div>
       </div>
+
+      <input
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        placeholder="Search order number or customer"
+        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+      />
 
       {error && <div className="bg-yellow-100 text-ink text-sm rounded-xl px-4 py-3">{error}</div>}
 
@@ -126,6 +154,7 @@ function Orders() {
             ) : (
               <tr>
                 <th className="text-left py-2 px-2">ORDER</th>
+                <th className="text-left py-2 px-2">CHANNEL</th>
                 <th className="text-left py-2 px-2">SOURCE</th>
                 <th className="text-left py-2 px-2">STATUS</th>
                 <th className="text-left py-2 px-2">TYPE</th>
@@ -136,7 +165,7 @@ function Orders() {
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={activeTab === 'reviews' ? 4 : 5} className="py-6 text-center text-muted">
+                <td colSpan={activeTab === 'reviews' ? 4 : 6} className="py-6 text-center text-muted">
                   {loading ? 'Loading...' : 'No data yet'}
                 </td>
               </tr>
@@ -153,8 +182,9 @@ function Orders() {
               rows.map((row) => (
                 <tr key={row.id} className="border-b last:border-0">
                   <td className="py-2 px-2">{row.order_number || '-'}</td>
+                  <td className="py-2 px-2 uppercase">{row.order_channel || '-'}</td>
                   <td className="py-2 px-2">{row.source || '-'}</td>
-                  <td className="py-2 px-2">{row.status || '-'}</td>
+                  <td className="py-2 px-2 capitalize">{row.status || '-'}</td>
                   <td className="py-2 px-2">{row.order_type || '-'}</td>
                   <td className="py-2 px-2 text-right">{formatCurrency(row.total)}</td>
                 </tr>
@@ -168,7 +198,7 @@ function Orders() {
         <button
           type="button"
           disabled={!hasPrev || loading}
-          onClick={() => loadData(activeTab, meta.page - 1)}
+          onClick={() => loadData(activeTab, meta.page - 1, search)}
           className="px-3 py-1.5 text-xs rounded-lg border border-slate-200 disabled:opacity-50"
         >
           Previous
@@ -179,7 +209,7 @@ function Orders() {
         <button
           type="button"
           disabled={!hasNext || loading}
-          onClick={() => loadData(activeTab, meta.page + 1)}
+          onClick={() => loadData(activeTab, meta.page + 1, search)}
           className="px-3 py-1.5 text-xs rounded-lg border border-slate-200 disabled:opacity-50"
         >
           Next

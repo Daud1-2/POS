@@ -1,6 +1,12 @@
 const express = require('express');
 const db = require('../services/db');
-const { createOrder, updateOrderStatus, ValidationError } = require('../services/ordersService');
+const {
+  createOrder,
+  updateOrderStatus,
+  ValidationError,
+  ALLOWED_ORDER_CHANNELS,
+  ALLOWED_STATUSES,
+} = require('../services/ordersService');
 
 const router = express.Router();
 
@@ -8,6 +14,21 @@ const toPositiveInt = (value, fallback = null) => {
   const num = Number(value);
   if (!Number.isInteger(num) || num <= 0) return fallback;
   return num;
+};
+
+const parseCsvList = (value) =>
+  String(value || '')
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry.length > 0);
+
+const parseIsoDate = (value, fieldName) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new ValidationError(`${fieldName} must be a valid ISO timestamp`);
+  }
+  return date.toISOString();
 };
 
 const parsePagination = (req) => {
@@ -46,20 +67,25 @@ const fetchOrdersWithPagination = async ({ whereClause, whereParams, pagination 
       o.legacy_order_id,
       o.order_number,
       o.source,
+      o.order_channel,
       o.order_type,
       o.status,
       o.scheduled_for,
       o.subtotal,
       o.tax,
       o.discount,
+      o.bulk_discount_amount,
+      o.promo_discount_amount,
+      o.promo_code_id,
       o.total,
       o.payment_status,
       o.payment_method,
       o.customer_id,
-      o.outlet_id,
+      o.outlet_id AS branch_id,
       o.created_at,
       o.updated_at,
-      o.completed_at
+      o.completed_at,
+      o.refunded_at
     FROM orders o
     WHERE ${whereClause}
     ORDER BY o.created_at DESC
@@ -79,9 +105,23 @@ const fetchOrdersWithPagination = async ({ whereClause, whereParams, pagination 
 
 router.post('/', async (req, res, next) => {
   try {
+    let branchId = req.effectiveBranchId;
+    if (req.branchScope === 'all') {
+      const requested = toPositiveInt(req.body?.branch_id ?? req.body?.outlet_id);
+      if (!requested) {
+        return res.status(400).json({ error: 'branch_id is required when using all-branch admin scope' });
+      }
+      const allowed = Array.isArray(req.effectiveBranchIds) ? req.effectiveBranchIds : [];
+      if (!allowed.includes(requested)) {
+        return res.status(403).json({ error: 'Branch is not in admin scope' });
+      }
+      branchId = requested;
+    }
+
     const created = await createOrder(req.body, {
-      outletId: req.effectiveOutletId,
+      branchId,
       actorId: req.user?.sub || null,
+      role: req.user?.role || 'cashier',
     });
     return res.status(201).json({ data: created });
   } catch (err) {
@@ -95,10 +135,80 @@ router.post('/', async (req, res, next) => {
 router.patch('/:order_id/status', async (req, res, next) => {
   try {
     const updated = await updateOrderStatus(req.params.order_id, req.body, {
-      outletId: req.effectiveOutletId,
+      branchId: req.effectiveBranchId,
       actorId: req.user?.sub || null,
+      role: req.user?.role || 'cashier',
     });
     return res.json({ data: updated });
+  } catch (err) {
+    if (err instanceof ValidationError) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
+    return next(err);
+  }
+});
+
+router.get('/', async (req, res, next) => {
+  try {
+    const pagination = parsePagination(req);
+    const channels = parseCsvList(req.query.channel).filter((value) => ALLOWED_ORDER_CHANNELS.has(value));
+    const statuses = parseCsvList(req.query.status).filter((value) => ALLOWED_STATUSES.has(value));
+    const invalidChannels = parseCsvList(req.query.channel).filter((value) => !ALLOWED_ORDER_CHANNELS.has(value));
+    const invalidStatuses = parseCsvList(req.query.status).filter((value) => !ALLOWED_STATUSES.has(value));
+    if (invalidChannels.length > 0) {
+      return res.status(400).json({ error: `Invalid channel filter: ${invalidChannels.join(', ')}` });
+    }
+    if (invalidStatuses.length > 0) {
+      return res.status(400).json({ error: `Invalid status filter: ${invalidStatuses.join(', ')}` });
+    }
+
+    const search = String(req.query.search || '').trim();
+    const dateFrom = parseIsoDate(req.query.date_from, 'date_from');
+    const dateTo = parseIsoDate(req.query.date_to, 'date_to');
+    if (dateFrom && dateTo && dateFrom >= dateTo) {
+      return res.status(400).json({ error: 'date_from must be earlier than date_to' });
+    }
+
+    const whereParams = [req.effectiveBranchIds];
+    const whereClauses = [
+      'o.outlet_id = ANY($1::int[])',
+      'o.deleted_at IS NULL',
+    ];
+
+    if (channels.length > 0) {
+      whereParams.push(channels);
+      whereClauses.push(`o.order_channel = ANY($${whereParams.length}::text[])`);
+    }
+
+    if (statuses.length > 0) {
+      whereParams.push(statuses);
+      whereClauses.push(`o.status = ANY($${whereParams.length}::text[])`);
+    }
+
+    if (search) {
+      whereParams.push(`%${search}%`);
+      whereClauses.push(`(
+        o.order_number ILIKE $${whereParams.length}
+        OR COALESCE(o.customer_name_snapshot, '') ILIKE $${whereParams.length}
+      )`);
+    }
+
+    if (dateFrom) {
+      whereParams.push(dateFrom);
+      whereClauses.push(`o.created_at >= $${whereParams.length}`);
+    }
+    if (dateTo) {
+      whereParams.push(dateTo);
+      whereClauses.push(`o.created_at < $${whereParams.length}`);
+    }
+
+    const response = await fetchOrdersWithPagination({
+      whereClause: whereClauses.join('\n        AND '),
+      whereParams,
+      pagination,
+    });
+
+    return res.json(response);
   } catch (err) {
     if (err instanceof ValidationError) {
       return res.status(err.statusCode).json({ error: err.message });
@@ -110,14 +220,28 @@ router.patch('/:order_id/status', async (req, res, next) => {
 router.get('/live', async (req, res, next) => {
   try {
     const pagination = parsePagination(req);
+    const channels = parseCsvList(req.query.channel).filter((value) => ALLOWED_ORDER_CHANNELS.has(value));
+    const invalidChannels = parseCsvList(req.query.channel).filter((value) => !ALLOWED_ORDER_CHANNELS.has(value));
+    if (invalidChannels.length > 0) {
+      return res.status(400).json({ error: `Invalid channel filter: ${invalidChannels.join(', ')}` });
+    }
+
+    const whereParams = [req.effectiveBranchIds];
+    let whereClause = `
+      o.outlet_id = ANY($1::int[])
+      AND o.deleted_at IS NULL
+      AND o.status IN ('pending', 'new', 'accepted', 'preparing', 'ready')
+      AND (o.scheduled_for IS NULL OR o.scheduled_for <= now())
+    `;
+
+    if (channels.length > 0) {
+      whereParams.push(channels);
+      whereClause += `\n      AND o.order_channel = ANY($${whereParams.length}::text[])`;
+    }
+
     const response = await fetchOrdersWithPagination({
-      whereClause: `
-        o.outlet_id = $1
-        AND o.deleted_at IS NULL
-        AND o.status IN ('open', 'preparing', 'ready', 'out_for_delivery')
-        AND (o.scheduled_for IS NULL OR o.scheduled_for <= now())
-      `,
-      whereParams: [req.effectiveOutletId],
+      whereClause,
+      whereParams,
       pagination,
     });
     return res.json(response);
@@ -131,13 +255,13 @@ router.get('/pre', async (req, res, next) => {
     const pagination = parsePagination(req);
     const response = await fetchOrdersWithPagination({
       whereClause: `
-        o.outlet_id = $1
+        o.outlet_id = ANY($1::int[])
         AND o.deleted_at IS NULL
         AND o.scheduled_for IS NOT NULL
         AND o.scheduled_for > now()
-        AND o.status NOT IN ('cancelled', 'refunded')
+        AND o.status NOT IN ('cancelled', 'refunded', 'rejected')
       `,
-      whereParams: [req.effectiveOutletId],
+      whereParams: [req.effectiveBranchIds],
       pagination,
     });
     return res.json(response);
@@ -151,11 +275,12 @@ router.get('/phone', async (req, res, next) => {
     const pagination = parsePagination(req);
     const response = await fetchOrdersWithPagination({
       whereClause: `
-        o.outlet_id = $1
+        o.outlet_id = ANY($1::int[])
         AND o.deleted_at IS NULL
+        AND o.order_channel = 'pos'
         AND o.source = 'phone'
       `,
-      whereParams: [req.effectiveOutletId],
+      whereParams: [req.effectiveBranchIds],
       pagination,
     });
     return res.json(response);
@@ -175,10 +300,10 @@ router.get('/reviews/summary', async (req, res, next) => {
         COALESCE(ROUND(AVG(r.rating)::numeric, 2), 0) AS average_rating
       FROM order_reviews r
       JOIN orders o ON o.id = r.order_id
-      WHERE o.outlet_id = $1
+      WHERE o.outlet_id = ANY($1::int[])
         AND o.deleted_at IS NULL
       `,
-      [req.effectiveOutletId]
+      [req.effectiveBranchIds]
     );
 
     const totalReviews = Number(summaryResult.rows[0]?.total_reviews || 0);
@@ -197,13 +322,13 @@ router.get('/reviews/summary', async (req, res, next) => {
         o.total
       FROM order_reviews r
       JOIN orders o ON o.id = r.order_id
-      WHERE o.outlet_id = $1
+      WHERE o.outlet_id = ANY($1::int[])
         AND o.deleted_at IS NULL
       ORDER BY r.created_at DESC
       LIMIT $2
       OFFSET $3
       `,
-      [req.effectiveOutletId, pagination.page_size, pagination.offset]
+      [req.effectiveBranchIds, pagination.page_size, pagination.offset]
     );
 
     return res.json({
@@ -224,3 +349,4 @@ router.get('/reviews/summary', async (req, res, next) => {
 });
 
 module.exports = router;
+

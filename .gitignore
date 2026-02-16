@@ -1,25 +1,81 @@
+# Dependencies and builds
 node_modules/
+**/node_modules/
 dist/
 build/
 coverage/
+web-build/
+
+# Environment and local config (sensitive)
 .env
 .env.*
+**/.env
+**/.env.*
+!.env.example
+!.env.sample
+!.env.template
+!**/.env.example
+!**/.env.sample
+!**/.env.template
+*.local
+**/*.local
+
+# Credentials, keys, and certificates
+*.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+*.jks
+*.keystore
+*.kdbx
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+.npmrc
+.pnpmrc
+.yarnrc.yml
+*serviceAccount*.json
+firebase-adminsdk*.json
+google-credentials*.json
+credentials/
+**/credentials/
+secrets/
+**/secrets/
+
+# Runtime logs
 *.log
+**/*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+*.pid
+*.pid.lock
+
+# Local data and uploads (can contain personal info)
+backend/uploads/
+uploads/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.dump
+*.bak
+*.backup
+*.sql.gz
+
+# Editor and OS files
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
-_ref_login/
 
 # Expo / React Native
 .expo/
 .expo-shared/
-web-build/
 
-# Local databases
-*.sqlite
-*.sqlite3
+# Local reference work
+_ref_login/

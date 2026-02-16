@@ -21,6 +21,7 @@ import {
   getTopProducts,
   getPaymentType,
   getChannelContribution,
+  getShiftSummary,
 } from '../services/dashboard';
 
 const MONTH_NAMES = [
@@ -115,8 +116,8 @@ const OrderTrendTooltip = ({ active, payload }) => {
 
   const totalOrders = toNumber(point.order_count);
   const totalSales = toNumber(point.sales_total);
-  const webOrders = toNumber(point.web_order_count);
-  const webSales = toNumber(point.web_sales_total);
+  const onlineOrders = toNumber(point.online_order_count ?? point.web_order_count);
+  const onlineSales = toNumber(point.online_sales_total ?? point.web_sales_total);
 
   return (
     <div className="bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-xl min-w-[220px]">
@@ -132,9 +133,9 @@ const OrderTrendTooltip = ({ active, payload }) => {
         <div className="flex items-center justify-between text-[11px]">
           <div className="flex items-center gap-2 text-slate-700">
             <span className="w-2 h-2 rounded-full bg-[#e11d48]" />
-            <span>Web Orders: {webOrders}</span>
+            <span>Online Orders: {onlineOrders}</span>
           </div>
-          <span className="text-slate-800">{formatCurrency(webSales)}</span>
+          <span className="text-slate-800">{formatCurrency(onlineSales)}</span>
         </div>
       </div>
     </div>
@@ -206,6 +207,7 @@ function Dashboard() {
   const [topProducts, setTopProducts] = useState([]);
   const [paymentType, setPaymentType] = useState([]);
   const [channelContribution, setChannelContribution] = useState([]);
+  const [shiftSummary, setShiftSummary] = useState(null);
   const [loadingFast, setLoadingFast] = useState(true);
   const [loadingSlow, setLoadingSlow] = useState(true);
   const [error, setError] = useState('');
@@ -218,11 +220,12 @@ function Dashboard() {
 
     const fetchFast = async () => {
       try {
-        const [summaryResponse, top, payment, channels] = await Promise.all([
+        const [summaryResponse, top, payment, channels, shift] = await Promise.all([
           getSummary(range),
           getTopProducts(range, 10),
           getPaymentType(range),
           getChannelContribution(range),
+          getShiftSummary(),
         ]);
 
         if (!mounted) return;
@@ -230,6 +233,7 @@ function Dashboard() {
         setTopProducts(top);
         setPaymentType(payment);
         setChannelContribution(channels);
+        setShiftSummary(shift);
         setError('');
         setLastUpdated(new Date());
       } catch (err) {
@@ -291,7 +295,13 @@ function Dashboard() {
   ];
 
   const salesSeries = useMemo(
-    () => buildSeriesByRange(range, salesTrend, ['order_count', 'sales_total', 'web_order_count', 'web_sales_total']),
+    () =>
+      buildSeriesByRange(range, salesTrend, [
+        'order_count',
+        'sales_total',
+        'online_order_count',
+        'online_sales_total',
+      ]),
     [range, salesTrend]
   );
 
@@ -417,6 +427,95 @@ function Dashboard() {
         ))}
       </div>
 
+      <div className="bg-white rounded-2xl shadow-card border border-slate-100 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold">Today Shift Reconciliation</h2>
+          <span className="text-xs text-slate-500">{shiftSummary?.date || '-'}</span>
+        </div>
+
+        {!shiftSummary ? (
+          <div className="mt-3 rounded-xl border border-dashed border-slate-200 px-3 py-4 text-sm text-muted">
+            {loadingFast ? 'Loading...' : 'No shift data yet'}
+          </div>
+        ) : shiftSummary.total_shifts === 0 ? (
+          <div className="mt-3 rounded-xl border border-dashed border-slate-200 px-3 py-4 text-sm text-muted">
+            Opening shift not recorded yet for today.
+          </div>
+        ) : (
+          <>
+            <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
+              <div className="rounded-xl border border-slate-200 p-2">
+                <p className="text-[11px] text-slate-500">Open</p>
+                <p className="text-sm font-semibold text-slate-900">{toNumber(shiftSummary.open_shifts)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-2">
+                <p className="text-[11px] text-slate-500">Closed</p>
+                <p className="text-sm font-semibold text-slate-900">{toNumber(shiftSummary.closed_shifts)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-2">
+                <p className="text-[11px] text-slate-500">Perfect</p>
+                <p className="text-sm font-semibold text-emerald-700">{toNumber(shiftSummary.perfect_count)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-2">
+                <p className="text-[11px] text-slate-500">Over</p>
+                <p className="text-sm font-semibold text-amber-700">{toNumber(shiftSummary.over_count)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-2">
+                <p className="text-[11px] text-slate-500">Short</p>
+                <p className="text-sm font-semibold text-rose-700">{toNumber(shiftSummary.short_count)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-2">
+                <p className="text-[11px] text-slate-500">Opening</p>
+                <p className="text-sm font-semibold text-slate-900">{formatCurrency(shiftSummary.total_opening_cash)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-2">
+                <p className="text-[11px] text-slate-500">Expected</p>
+                <p className="text-sm font-semibold text-slate-900">{formatCurrency(shiftSummary.total_expected_cash)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-2">
+                <p className="text-[11px] text-slate-500">Difference</p>
+                <p className="text-sm font-semibold text-slate-900">{formatCurrency(shiftSummary.total_difference)}</p>
+              </div>
+            </div>
+
+            {Array.isArray(shiftSummary.records) && shiftSummary.records.length > 0 && (
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 text-slate-600">
+                    <tr>
+                      <th className="px-2 py-2 text-left">Branch</th>
+                      <th className="px-2 py-2 text-left">Status</th>
+                      <th className="px-2 py-2 text-left">Opening</th>
+                      <th className="px-2 py-2 text-left">Cash Sales</th>
+                      <th className="px-2 py-2 text-left">Expenses</th>
+                      <th className="px-2 py-2 text-left">Expected</th>
+                      <th className="px-2 py-2 text-left">Closing</th>
+                      <th className="px-2 py-2 text-left">Difference</th>
+                      <th className="px-2 py-2 text-left">Result</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shiftSummary.records.map((row) => (
+                      <tr key={row.id} className="border-b border-slate-100 last:border-0">
+                        <td className="px-2 py-2 text-slate-700">{row.branch_name}</td>
+                        <td className="px-2 py-2 text-slate-700">{row.status}</td>
+                        <td className="px-2 py-2 text-slate-700">{formatCurrency(row.opening_cash)}</td>
+                        <td className="px-2 py-2 text-slate-700">{formatCurrency(row.cash_sales)}</td>
+                        <td className="px-2 py-2 text-slate-700">{formatCurrency(row.expenses)}</td>
+                        <td className="px-2 py-2 text-slate-700">{formatCurrency(row.expected_cash)}</td>
+                        <td className="px-2 py-2 text-slate-700">{formatCurrency(row.closing_cash || 0)}</td>
+                        <td className="px-2 py-2 text-slate-700">{formatCurrency(row.difference || 0)}</td>
+                        <td className="px-2 py-2 text-slate-700">{row.reconciliation_status || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="bg-white rounded-2xl shadow-card border border-slate-100 p-4">
           <div className="flex items-center justify-between">
@@ -460,7 +559,7 @@ function Dashboard() {
                   />
                   <Line
                     type="linear"
-                    dataKey="web_order_count"
+                    dataKey="online_order_count"
                     stroke="#e11d48"
                     strokeWidth={1.6}
                     strokeDasharray="4 3"

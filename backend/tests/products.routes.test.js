@@ -55,7 +55,7 @@ describe('products routes', () => {
       { id: 1, name: 'Cola', sku: 'COLA-1', price: 100, stock: 10, is_active: true },
     ]);
 
-    const res = await request(app).get('/api/products').query({ outlet_id: 1 });
+    const res = await request(app).get('/api/products').query({ branch_id: 1 });
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(1);
@@ -66,9 +66,9 @@ describe('products routes', () => {
     const res = await request(app)
       .post('/api/products/sections')
       .set('x-dev-role', 'manager')
-      .set('x-dev-outlet-id', '1')
+      .set('x-dev-branch-id', '1')
       .send({ name: 'Grill' })
-      .query({ outlet_id: 1 });
+      .query({ branch_id: 1 });
 
     expect(res.status).toBe(403);
   });
@@ -84,8 +84,8 @@ describe('products routes', () => {
     const res = await request(app)
       .post('/api/products/items')
       .set('x-dev-role', 'manager')
-      .set('x-dev-outlet-id', '1')
-      .query({ outlet_id: 1 })
+      .set('x-dev-branch-id', '1')
+      .query({ branch_id: 1 })
       .send({
         name: 'Burger',
         sku: 'BURG-1',
@@ -103,7 +103,7 @@ describe('products routes', () => {
       meta: { page: 1, page_size: 25, total: 1, total_pages: 1 },
     });
 
-    const res = await request(app).get('/api/products/items').query({ outlet_id: 1, page: 1, page_size: 25 });
+    const res = await request(app).get('/api/products/items').query({ branch_id: 1, page: 1, page_size: 25 });
 
     expect(res.status).toBe(200);
     expect(res.body.meta).toMatchObject({ page: 1, page_size: 25, total: 1, total_pages: 1 });
@@ -113,9 +113,10 @@ describe('products routes', () => {
   test('legacy product by id returns 404 when missing', async () => {
     db.query.mockResolvedValueOnce({ rows: [] });
 
-    const res = await request(app).get('/api/products/9999').query({ outlet_id: 1 });
+    const res = await request(app).get('/api/products/9999').query({ branch_id: 1 });
 
     expect(res.status).toBe(404);
     expect(res.body.error).toMatch(/not found/i);
   });
 });
+

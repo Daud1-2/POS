@@ -123,6 +123,20 @@ ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 ALTER TABLE orders
 ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
+DO $$
+DECLARE
+  rec RECORD;
+BEGIN
+  FOR rec IN
+    SELECT conname
+    FROM pg_constraint
+    WHERE conrelid = 'orders'::regclass
+      AND contype = 'c'
+  LOOP
+    EXECUTE format('ALTER TABLE orders DROP CONSTRAINT IF EXISTS %I', rec.conname);
+  END LOOP;
+END$$;
+
 UPDATE orders
 SET source = 'kiosk'
 WHERE source = 'app';
@@ -202,20 +216,6 @@ ALTER COLUMN updated_at SET DEFAULT now(),
 ALTER COLUMN updated_at SET NOT NULL,
 ALTER COLUMN outlet_id SET DEFAULT 1,
 ALTER COLUMN outlet_id SET NOT NULL;
-
-DO $$
-DECLARE
-  rec RECORD;
-BEGIN
-  FOR rec IN
-    SELECT conname
-    FROM pg_constraint
-    WHERE conrelid = 'orders'::regclass
-      AND contype = 'c'
-  LOOP
-    EXECUTE format('ALTER TABLE orders DROP CONSTRAINT IF EXISTS %I', rec.conname);
-  END LOOP;
-END$$;
 
 ALTER TABLE orders
 ADD CONSTRAINT orders_source_check

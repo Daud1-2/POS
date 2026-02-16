@@ -35,8 +35,8 @@ jest.mock('../src/services/catalogService', () => {
     addImage: jest.fn(),
     updateImage: jest.fn(),
     softDeleteImage: jest.fn(),
-    listOutletSettings: jest.fn(),
-    upsertOutletSetting: jest.fn(),
+    listBranchSettings: jest.fn(),
+    upsertBranchSetting: jest.fn(),
     getDefaultSectionId: jest.fn(),
   };
 });
@@ -56,7 +56,7 @@ describe('products image routes', () => {
 
     const res = await request(app)
       .get('/api/products/items/0f9408fa-4068-45c5-b31d-c2cae08cd1cb/images')
-      .query({ outlet_id: 1 });
+      .query({ branch_id: 1 });
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(1);
@@ -66,8 +66,8 @@ describe('products image routes', () => {
     const res = await request(app)
       .post('/api/products/items/0f9408fa-4068-45c5-b31d-c2cae08cd1cb/images/upload')
       .set('x-dev-role', 'manager')
-      .set('x-dev-outlet-id', '1')
-      .query({ outlet_id: 1 });
+      .set('x-dev-branch-id', '1')
+      .query({ branch_id: 1 });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/required/i);
@@ -82,8 +82,8 @@ describe('products image routes', () => {
     const res = await request(app)
       .patch('/api/products/items/0f9408fa-4068-45c5-b31d-c2cae08cd1cb/images/d8dfe169-9af1-4c3e-a2f1-84023f44fdaf')
       .set('x-dev-role', 'manager')
-      .set('x-dev-outlet-id', '1')
-      .query({ outlet_id: 1 })
+      .set('x-dev-branch-id', '1')
+      .query({ branch_id: 1 })
       .send({ is_primary: true });
 
     expect(res.status).toBe(200);

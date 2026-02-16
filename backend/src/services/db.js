@@ -22,12 +22,27 @@ const buildPoolConfig = () => {
   };
 };
 
-const pool = new Pool(buildPoolConfig());
+let pool = null;
 
-const query = (text, params) => pool.query(text, params);
-const getClient = () => pool.connect();
+const getPool = () => {
+  if (!pool) {
+    pool = new Pool(buildPoolConfig());
+  }
+  return pool;
+};
+
+const query = (text, params) => getPool().query(text, params);
+const getClient = () => getPool().connect();
+
+const closePool = async () => {
+  if (!pool) return;
+  const currentPool = pool;
+  pool = null;
+  await currentPool.end();
+};
 
 module.exports = {
   query,
   getClient,
+  closePool,
 };
