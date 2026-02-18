@@ -72,6 +72,17 @@ function CashierHeader({
         >
           Mark as Completed
         </button>
+        <button
+          type="button"
+          onClick={() => onOrderModeChange('shift')}
+          className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+            orderMode === 'shift'
+              ? 'bg-brandYellow text-ink'
+              : 'border border-slate-200 bg-white text-slate-700 hover:border-brandYellow'
+          }`}
+        >
+          Shift Control
+        </button>
 
         {showOrderTypeControls && (
           <>

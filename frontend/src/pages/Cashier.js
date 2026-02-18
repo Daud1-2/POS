@@ -341,6 +341,8 @@ const readShiftFallbackForToday = () => {
 function Cashier() {
   const itemsRequestRef = useRef(0);
   const quoteRequestRef = useRef(0);
+  const confirmOrderShortcutRef = useRef(null);
+  const markOrderAsCompletedShortcutRef = useRef(null);
 
   const [now, setNow] = useState(new Date());
   const [currentRole, setCurrentRole] = useState(
@@ -509,6 +511,7 @@ function Cashier() {
   const isPosMode = orderMode === 'pos';
   const isOnlineMode = orderMode === 'online';
   const isCompletedMode = orderMode === 'completed';
+  const isShiftMode = orderMode === 'shift';
 
   const resetPinModal = () => {
     setShowPinModal(false);
@@ -519,7 +522,7 @@ function Cashier() {
   const handleOrderModeChange = useCallback((nextMode) => {
     const normalized = String(nextMode || '').trim().toLowerCase();
     if (!normalized) return;
-    if (!['pos', 'online', 'completed'].includes(normalized)) return;
+    if (!['pos', 'online', 'completed', 'shift'].includes(normalized)) return;
     if (normalized !== 'pos') {
       setAddonModal({
         open: false,
@@ -1230,7 +1233,7 @@ function Cashier() {
     setHeldOrders((prev) => prev.filter((entry) => entry.id !== heldId));
   };
 
-  const openCashDrawer = async () => {
+  const openCashDrawer = useCallback(async () => {
     try {
       const maybeElectron = window?.electronAPI?.openCashDrawer;
       const maybeBridge = window?.posBridge?.openCashDrawer;
@@ -1253,7 +1256,57 @@ function Cashier() {
     } catch (error) {
       setCashDrawerStatus('Cash drawer not connected. Connect hardware bridge/printer first.');
     }
-  };
+  }, []);
+
+  const focusCashReceivedInput = useCallback(() => {
+    const input = document.getElementById('cash-received-input');
+    if (!input || typeof input.focus !== 'function') return false;
+    input.focus();
+    if (typeof input.select === 'function') {
+      input.select();
+    }
+    return true;
+  }, []);
+
+  useEffect(() => {
+    const handleDrawerShortcut = (event) => {
+      const key = String(event?.key || '').toLowerCase();
+      if (key !== 'r') return;
+      if (!event.ctrlKey && !event.metaKey) return;
+      if (!isPosMode) return;
+
+      event.preventDefault();
+      openCashDrawer();
+    };
+
+    window.addEventListener('keydown', handleDrawerShortcut);
+    return () => window.removeEventListener('keydown', handleDrawerShortcut);
+  }, [isPosMode, openCashDrawer]);
+
+  useEffect(() => {
+    const handleCashFocusShortcut = (event) => {
+      const key = String(event?.key || '').toLowerCase();
+      if (key !== 'c') return;
+      if (!event.ctrlKey && !event.metaKey) return;
+      if (!isPosMode) return;
+
+      event.preventDefault();
+
+      if (paymentMethod !== 'cash') {
+        setPaymentMethod('cash');
+      }
+
+      const focused = focusCashReceivedInput();
+      if (focused) return;
+
+      setTimeout(() => {
+        focusCashReceivedInput();
+      }, 40);
+    };
+
+    window.addEventListener('keydown', handleCashFocusShortcut);
+    return () => window.removeEventListener('keydown', handleCashFocusShortcut);
+  }, [focusCashReceivedInput, isPosMode, paymentMethod]);
 
   const startShift = async () => {
     const opening = Number(openingCashInput || 0);
@@ -1622,6 +1675,28 @@ function Cashier() {
     }
   };
 
+  confirmOrderShortcutRef.current = confirmOrder;
+  markOrderAsCompletedShortcutRef.current = markOrderAsCompleted;
+
+  useEffect(() => {
+    const handleConfirmShortcut = (event) => {
+      const key = String(event?.key || '').toLowerCase();
+      if (key !== 'd') return;
+      if (!event.ctrlKey && !event.metaKey) return;
+      if (!isPosMode) return;
+
+      event.preventDefault();
+      if (pendingOrder) {
+        markOrderAsCompletedShortcutRef.current?.(pendingOrder);
+        return;
+      }
+      confirmOrderShortcutRef.current?.();
+    };
+
+    window.addEventListener('keydown', handleConfirmShortcut);
+    return () => window.removeEventListener('keydown', handleConfirmShortcut);
+  }, [isPosMode, pendingOrder]);
+
   const startNewOrder = () => {
     setReceipt(null);
     setPendingOrder(null);
@@ -1673,6 +1748,12 @@ function Cashier() {
   const updateOrderStatus = async (order, nextStatus) => {
     if (isOnlineMode) return;
     if (!order?.id) return;
+    if (orderMode === 'completed' && nextStatus === 'cancelled') {
+      const confirmed = window.confirm(
+        `Order ${order.order_number || ''} will be cancelled. Continue?`
+      );
+      if (!confirmed) return;
+    }
     setStatusActionBusyId(order.id);
     try {
       await updateCashierOrderStatus(order.id, {
@@ -1792,6 +1873,25 @@ function Cashier() {
               canManageStatus={isManagerOrAdmin}
               statusActionBusyId={statusActionBusyId}
             />
+          ) : isShiftMode ? (
+            <div className="max-w-2xl">
+              <ShiftPanel
+                activeShift={activeShift}
+                shiftLoading={shiftLoading}
+                shiftLockedForDay={shiftLockedForDay}
+                shiftApiUnavailable={shiftApiUnavailable}
+                openingCashInput={openingCashInput}
+                closingCashInput={closingCashInput}
+                expenseInput={expenseInput}
+                onOpeningCashChange={setOpeningCashInput}
+                onClosingCashChange={setClosingCashInput}
+                onExpenseChange={setExpenseInput}
+                onAddExpense={addShiftExpense}
+                onStartShift={startShift}
+                onEndShift={endShift}
+                shiftReport={lastShiftReport}
+              />
+            </div>
           ) : (
             <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_400px]">
               <div className="space-y-3">
@@ -1903,37 +2003,6 @@ function Cashier() {
                   </div>
                 )}
 
-                <ShiftPanel
-                  activeShift={activeShift}
-                  shiftLoading={shiftLoading}
-                  shiftLockedForDay={shiftLockedForDay}
-                  shiftApiUnavailable={shiftApiUnavailable}
-                  openingCashInput={openingCashInput}
-                  closingCashInput={closingCashInput}
-                  expenseInput={expenseInput}
-                  onOpeningCashChange={setOpeningCashInput}
-                  onClosingCashChange={setClosingCashInput}
-                  onExpenseChange={setExpenseInput}
-                  onAddExpense={addShiftExpense}
-                  onStartShift={startShift}
-                  onEndShift={endShift}
-                  shiftReport={lastShiftReport}
-                />
-
-                <OrderManagementPanel
-                  panelMode={orderMode}
-                  readOnly={isOnlineMode}
-                  searchValue={orderSearchInput}
-                  onSearchChange={setOrderSearchInput}
-                  orders={filteredTodayOrders}
-                  loading={ordersLoading}
-                  error={ordersError}
-                  onRefresh={loadTodayOrders}
-                  onReprint={reprintOrder}
-                  onUpdateStatus={updateOrderStatus}
-                  canManageStatus={!isOnlineMode && isManagerOrAdmin}
-                  statusActionBusyId={statusActionBusyId}
-                />
               </div>
             </div>
           )}

@@ -1,7 +1,28 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import PromoRow from './PromoRow';
 
 const formatMoney = (value) => `PKR ${Number(value || 0).toLocaleString()}`;
+
+const normalizeCashInput = (value) => {
+  const raw = String(value || '');
+  if (!raw) return '';
+
+  const cleaned = raw.replace(/[^\d.]/g, '');
+  if (!cleaned) return '';
+
+  const dotIndex = cleaned.indexOf('.');
+  const hasDecimal = dotIndex !== -1;
+  const integerRaw = hasDecimal ? cleaned.slice(0, dotIndex) : cleaned;
+  const decimalRaw = hasDecimal ? cleaned.slice(dotIndex + 1).replace(/\./g, '') : '';
+
+  const integerPart = integerRaw.replace(/^0+(?=\d)/, '').slice(0, 9);
+  const decimalPart = decimalRaw.slice(0, 2);
+
+  if (hasDecimal) {
+    return `${integerPart || '0'}.${decimalPart}`;
+  }
+  return integerPart;
+};
 
 function CartPanel({
   lines,
@@ -52,24 +73,33 @@ function CartPanel({
   const promoDiscount = quote ? Number(quote.promo_discount_total || 0) : 0;
   const manualDiscount = manualDiscountEnabled ? Number(manualDiscountInput || 0) : 0;
   const payableTotal = Math.max(0, total - manualDiscount);
-  const enteredCashDigits = String(cashReceivedInput || '').replace(/\D/g, '');
-  const enteredCashValue = enteredCashDigits ? Number(enteredCashDigits) : 0;
+  const showTouchKeypad = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    const hasCoarsePointer = typeof window.matchMedia === 'function'
+      && window.matchMedia('(pointer: coarse)').matches;
+    const touchPoints = Number(window.navigator?.maxTouchPoints || 0);
+    return hasCoarsePointer || touchPoints > 0;
+  }, []);
+  const [isTouchKeypadOpen, setIsTouchKeypadOpen] = useState(false);
 
-  const appendCashDigit = (digit) => {
-    const normalizedDigit = String(digit || '').replace(/\D/g, '');
-    if (!normalizedDigit) return;
-    const current = String(cashReceivedInput || '').replace(/\D/g, '');
-    const base = current === '0' ? '' : current;
-    const nextRaw = `${base}${normalizedDigit}`.slice(0, 9);
-    const next = nextRaw.replace(/^0+(?=\d)/, '');
-    onCashReceivedInputChange(next);
+  const handleCashReceivedInputChange = (event) => {
+    const raw = String(event?.target?.value || '');
+    onCashReceivedInputChange(normalizeCashInput(raw));
   };
 
-  const deleteCashDigit = () => {
-    const current = String(cashReceivedInput || '').replace(/\D/g, '');
-    if (!current) return;
-    const next = current.slice(0, -1);
-    onCashReceivedInputChange(next);
+  const appendTouchCashKey = (key) => {
+    const normalizedKey = String(key || '');
+    if (!normalizedKey) return;
+    const current = String(cashReceivedInput || '');
+    if (normalizedKey === 'Del') {
+      onCashReceivedInputChange(normalizeCashInput(current.slice(0, -1)));
+      return;
+    }
+    if (normalizedKey === 'Clear') {
+      onCashReceivedInputChange('');
+      return;
+    }
+    onCashReceivedInputChange(normalizeCashInput(`${current}${normalizedKey}`));
   };
 
   return (
@@ -300,28 +330,59 @@ function CartPanel({
       </div>
 
       {paymentMethod === 'cash' && (
-        <div className="mt-4 space-y-2 rounded-xl border border-slate-200 p-3">
+        <div className="mt-4 space-y-3 rounded-xl border border-slate-200 p-3">
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Cash Handling</p>
-          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
-            <span className="text-slate-600">Cash received</span>
-            <span className="font-semibold text-slate-900">{formatMoney(enteredCashValue)}</span>
+          <div className="space-y-1">
+            <label htmlFor="cash-received-input" className="text-xs font-medium text-slate-600">
+              Cash received
+            </label>
+            <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-slate-500">PKR</span>
+                <input
+                  id="cash-received-input"
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  value={cashReceivedInput}
+                  onChange={handleCashReceivedInputChange}
+                  placeholder="0"
+                  className="w-full border-0 bg-transparent p-0 text-xl font-semibold text-slate-900 outline-none placeholder:text-slate-400"
+                />
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">Type on keyboard (Ctrl+C focuses here) or number keypad (mobile).</p>
+            </div>
           </div>
-          <div className="grid grid-cols-3 gap-2">
-            {['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'Del'].map((key) =>
-              key ? (
+          {showTouchKeypad && (
+            <button
+              type="button"
+              onClick={() => setIsTouchKeypadOpen((prev) => !prev)}
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:border-brandYellow"
+            >
+              {isTouchKeypadOpen ? 'Hide Keypad' : 'Show Keypad'}
+            </button>
+          )}
+          {showTouchKeypad && isTouchKeypadOpen && (
+            <div className="grid grid-cols-3 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2">
+              {['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'Del'].map((key) => (
                 <button
                   key={key}
                   type="button"
-                  onClick={() => (key === 'Del' ? deleteCashDigit() : appendCashDigit(key))}
-                  className="rounded-xl border border-slate-200 bg-white py-3 text-xl font-medium text-slate-800 hover:border-brandYellow"
+                  onClick={() => appendTouchCashKey(key)}
+                  className="rounded-lg border border-slate-200 bg-white py-2.5 text-base font-semibold text-slate-800 active:scale-[0.99]"
                 >
                   {key}
                 </button>
-              ) : (
-                <div key="blank-key" />
-              )
-            )}
-          </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => appendTouchCashKey('Clear')}
+                className="col-span-3 rounded-lg border border-slate-200 bg-white py-2 text-sm font-medium text-slate-700"
+              >
+                Clear
+              </button>
+            </div>
+          )}
           <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
             <span className="text-slate-600">Change</span>
             <span className="font-semibold text-slate-900">{formatMoney(changeDue)}</span>
@@ -334,7 +395,7 @@ function CartPanel({
             onClick={onOpenCashDrawer}
             className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 hover:border-brandYellow"
           >
-            Open Cash Drawer
+            Open Cash Drawer (Ctrl+R)
           </button>
           {cashDrawerStatus && <p className="text-xs text-slate-600">{cashDrawerStatus}</p>}
         </div>
@@ -356,7 +417,7 @@ function CartPanel({
         disabled={checkoutDisabled}
         className="mt-4 w-full rounded-lg bg-brandYellow py-3 text-sm font-semibold text-ink transition hover:bg-brandYellowDark disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {checkoutBusy ? 'Saving...' : pendingOrder ? 'Mark as Completed' : 'Confirm Order'}
+        {checkoutBusy ? 'Saving...' : pendingOrder ? 'Mark as Completed (Ctrl+D)' : 'Confirm Order (Ctrl+D)'}
       </button>
     </aside>
   );
