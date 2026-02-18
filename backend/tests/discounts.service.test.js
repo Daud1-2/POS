@@ -96,6 +96,70 @@ describe('discountsService', () => {
     });
   });
 
+  test('applies legacy promo aliases for percentage and channel', async () => {
+    db.query.mockImplementation(async (sql) => {
+      if (sql.includes('FROM products p')) {
+        return {
+          rows: [
+            {
+              id: 1,
+              base_price: 200,
+              is_active: true,
+              section_id: 'section-1',
+              category_id: 10,
+            },
+          ],
+        };
+      }
+      if (sql.includes('FROM product_outlet_settings')) {
+        return { rows: [] };
+      }
+      if (sql.includes('FROM bulk_discounts')) {
+        return { rows: [] };
+      }
+      if (sql.includes('FROM promo_codes')) {
+        return {
+          rows: [
+            {
+              id: 77,
+              uuid: 'promo-legacy',
+              code: 'LEGACY20',
+              name: 'Legacy 20%',
+              applicable_on: 'POS',
+              discount_type: 'PERCENT',
+              discount_value: 20,
+              min_order_amount: null,
+              max_discount_amount: null,
+              per_user_limit: null,
+              usage_limit: 100,
+              used_count: 0,
+              status: 'ACTIVE',
+              start_time: new Date('2026-01-01').toISOString(),
+              end_time: new Date('2026-12-31').toISOString(),
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    });
+
+    const result = await computeDiscountQuote({
+      outletId: 1,
+      source: 'pos',
+      promoCode: 'LEGACY20',
+      items: [{ product_id: 1, quantity: 1 }],
+      tax: 0,
+    });
+
+    expect(result).toMatchObject({
+      subtotal: 200,
+      bulk_discount_total: 0,
+      promo_discount_total: 40,
+      discount_total: 40,
+      final_total: 160,
+    });
+  });
+
   test('per-user promo can validate without customer_id for guest checkout', async () => {
     db.query.mockImplementation(async (sql) => {
       if (sql.includes('FROM promo_codes')) {

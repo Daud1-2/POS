@@ -97,3 +97,28 @@ npm start
 - `GET /api/dashboard/heatmap?range=30d`
 - `GET /api/dashboard/top-products?range=30d&limit=10`
 - `GET /api/dashboard/channel-contribution?range=30d`
+
+## PWA (Windows Install + Offline + Auto-Update)
+
+### Production Requirement
+
+- Host the frontend over HTTPS (required for service worker and install prompt).
+- Root path deployment is expected (`/`).
+
+### Windows Install (Edge/Chrome)
+
+1. Open the deployed POS URL in Microsoft Edge or Google Chrome.
+2. Use the browser install button (`Install app` / `Apps > Install this site as an app`).
+3. Launch the installed app from Start Menu or desktop shortcut.
+
+### Offline Behavior
+
+- After the first successful online load, the app shell and static assets are cached.
+- Routes like `/`, `/dashboard`, and `/cashier` can reopen while offline.
+- API responses are network-only by design, so live data still requires connectivity.
+
+### Update Behavior
+
+- New deployments trigger service worker updates automatically.
+- The new worker activates immediately (`SKIP_WAITING`) and the app reloads once.
+- Users are moved to the newest frontend build without manual cache clearing.

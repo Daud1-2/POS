@@ -43,6 +43,10 @@ const DEFAULT_BRANCH_SETTINGS = Object.freeze({
   temporary_closed: false,
   working_hours: DEFAULT_WORKING_HOURS,
   enforce_working_hours: true,
+  feature_flags: {
+    offline_v2_enabled: false,
+    edge_enabled: false,
+  },
   created_at: null,
   updated_at: null,
 });
@@ -278,6 +282,15 @@ const SETTINGS_SCHEMA_DDL = [
   )
   `,
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_branch_settings_branch_unique ON branch_settings(branch_id)',
+  `
+  CREATE TABLE IF NOT EXISTS branch_feature_flags (
+    branch_id BIGINT PRIMARY KEY REFERENCES branches(id),
+    offline_v2_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    edge_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )
+  `,
 ];
 
 const ensureSettingsSchema = async (client = null) => {
@@ -361,6 +374,33 @@ const ensureBranchSettingsRecord = async (client, branchId) => {
   );
 };
 
+const ensureBranchFeatureFlagsRecord = async (client, branchId) => {
+  await runQuery(
+    client,
+    `
+    INSERT INTO branch_feature_flags (
+      branch_id,
+      offline_v2_enabled,
+      edge_enabled,
+      created_at,
+      updated_at
+    )
+    SELECT
+      $1,
+      FALSE,
+      FALSE,
+      now(),
+      now()
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM branch_feature_flags
+      WHERE branch_id = $1
+    )
+    `,
+    [branchId]
+  );
+};
+
 const mapBusinessSettings = (row = {}) => ({
   id: row.id ?? null,
   uuid: row.uuid ?? null,
@@ -396,6 +436,10 @@ const mapBranchSettingsRow = (row = {}) => ({
     ? normalizeWorkingHours(row.working_hours, { required: true })
     : clone(DEFAULT_WORKING_HOURS),
   enforce_working_hours: row.enforce_working_hours === undefined ? true : Boolean(row.enforce_working_hours),
+  feature_flags: {
+    offline_v2_enabled: row.offline_v2_enabled === undefined ? false : Boolean(row.offline_v2_enabled),
+    edge_enabled: row.edge_enabled === undefined ? false : Boolean(row.edge_enabled),
+  },
   created_at: row.settings_created_at || row.created_at || null,
   updated_at: row.settings_updated_at || row.updated_at || null,
 });
@@ -726,11 +770,15 @@ const fetchBranchWithSettings = async ({ client, branchId }) => {
       bs.temporary_closed,
       bs.working_hours,
       bs.enforce_working_hours,
+      ff.offline_v2_enabled,
+      ff.edge_enabled,
       bs.created_at AS settings_created_at,
       bs.updated_at AS settings_updated_at
     FROM branches b
     LEFT JOIN branch_settings bs
       ON bs.branch_id = b.id
+    LEFT JOIN branch_feature_flags ff
+      ON ff.branch_id = b.id
     WHERE b.id = $1
       AND b.deleted_at IS NULL
     LIMIT 1
@@ -751,8 +799,11 @@ const getBranchSettingsById = async (branchIdInput, client = null) => {
     }
     if (!row.settings_id) {
       await ensureBranchSettingsRecord(client, branchId);
+      await ensureBranchFeatureFlagsRecord(client, branchId);
       row = await fetchBranchWithSettings({ client, branchId });
     }
+    await ensureBranchFeatureFlagsRecord(client, branchId);
+    row = await fetchBranchWithSettings({ client, branchId });
     return { branch: mapBranchRow(row), settings: mapBranchSettingsRow(row) };
   }
 
@@ -763,8 +814,11 @@ const getBranchSettingsById = async (branchIdInput, client = null) => {
     }
     if (!row.settings_id) {
       await ensureBranchSettingsRecord(null, branchId);
+      await ensureBranchFeatureFlagsRecord(null, branchId);
       row = await fetchBranchWithSettings({ client: null, branchId });
     }
+    await ensureBranchFeatureFlagsRecord(null, branchId);
+    row = await fetchBranchWithSettings({ client: null, branchId });
     return { branch: mapBranchRow(row), settings: mapBranchSettingsRow(row) };
   }
 
@@ -778,8 +832,11 @@ const getBranchSettingsById = async (branchIdInput, client = null) => {
     }
     if (!row.settings_id) {
       await ensureBranchSettingsRecord(ownedClient, branchId);
+      await ensureBranchFeatureFlagsRecord(ownedClient, branchId);
       row = await fetchBranchWithSettings({ client: ownedClient, branchId });
     }
+    await ensureBranchFeatureFlagsRecord(ownedClient, branchId);
+    row = await fetchBranchWithSettings({ client: ownedClient, branchId });
     await ownedClient.query('COMMIT');
     return { branch: mapBranchRow(row), settings: mapBranchSettingsRow(row) };
   } catch (err) {
@@ -817,7 +874,11 @@ const updateBranchSettings = async (branchIdInput, payload = {}) => {
   if (payload.working_hours !== undefined) {
     updates.working_hours = normalizeWorkingHours(payload.working_hours, { required: true });
   }
-  if (Object.keys(updates).length === 0) {
+  const featureFlags = isObject(payload.feature_flags) ? payload.feature_flags : null;
+  const hasFeatureFlagChanges = featureFlags
+    && (featureFlags.offline_v2_enabled !== undefined || featureFlags.edge_enabled !== undefined);
+
+  if (Object.keys(updates).length === 0 && !hasFeatureFlagChanges) {
     throw new SettingsValidationError('No branch settings fields provided');
   }
 
@@ -844,6 +905,7 @@ const updateBranchSettings = async (branchIdInput, payload = {}) => {
     }
 
     await ensureBranchSettingsRecord(client, actualBranchId);
+    await ensureBranchFeatureFlagsRecord(client, actualBranchId);
 
     const setClauses = [];
     const params = [actualBranchId];
@@ -869,6 +931,34 @@ const updateBranchSettings = async (branchIdInput, payload = {}) => {
       `,
       params
     );
+
+    if (hasFeatureFlagChanges) {
+      const updatesFeature = [];
+      const featureParams = [actualBranchId];
+      let featureParamIdx = 2;
+
+      if (featureFlags.offline_v2_enabled !== undefined) {
+        updatesFeature.push(`offline_v2_enabled = $${featureParamIdx}`);
+        featureParams.push(toBoolean(featureFlags.offline_v2_enabled, 'feature_flags.offline_v2_enabled'));
+        featureParamIdx += 1;
+      }
+      if (featureFlags.edge_enabled !== undefined) {
+        updatesFeature.push(`edge_enabled = $${featureParamIdx}`);
+        featureParams.push(toBoolean(featureFlags.edge_enabled, 'feature_flags.edge_enabled'));
+        featureParamIdx += 1;
+      }
+      updatesFeature.push('updated_at = now()');
+
+      await runQuery(
+        client,
+        `
+        UPDATE branch_feature_flags
+        SET ${updatesFeature.join(', ')}
+        WHERE branch_id = $1
+        `,
+        featureParams
+      );
+    }
 
     await client.query('COMMIT');
     return getBranchSettingsById(actualBranchId);

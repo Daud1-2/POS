@@ -118,6 +118,17 @@ body {
   animation: slide-up 0.7s ease-out both;
 }
 
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
 input:not([type='checkbox']):not([type='radio']):focus,
 textarea:focus,
 select:focus,

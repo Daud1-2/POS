@@ -29,7 +29,10 @@ function App() {
   const offlineTimerRef = useRef(null);
 
   useEffect(() => {
-    client.ping();
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return;
+    }
+    Promise.resolve(client.ping()).catch(() => {});
   }, []);
 
   useEffect(() => {

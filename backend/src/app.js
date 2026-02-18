@@ -14,6 +14,7 @@ const customersRoutes = require('./routes/customers');
 const reportingRoutes = require('./routes/reporting');
 const settingsRoutes = require('./routes/settings');
 const shiftsRoutes = require('./routes/shifts');
+const syncV2Routes = require('./routes/syncV2');
 const authClaims = require('./middleware/authClaims');
 const outletScope = require('./middleware/outletScope');
 const reportingScope = require('./middleware/reportingScope');
@@ -49,6 +50,7 @@ app.use('/api/discounts', authClaims, outletScope, maintenanceGuard, discountsRo
 app.use('/api/customers', authClaims, outletScope, maintenanceGuard, customersRoutes);
 app.use('/api/shifts', authClaims, outletScope, shiftsRoutes);
 app.use('/api/reporting', authClaims, reportingScope, reportingRoutes);
+app.use('/api/v2', authClaims, outletScope, syncV2Routes);
 
 app.use((err, req, res, next) => {
   console.error(err.stack);

@@ -149,7 +149,7 @@ function Sidebar() {
   const isMenuOpen = (item) => Boolean(menuPinnedOpen[item.path] || menuHoverOpen[item.path]);
 
   return (
-    <aside className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:z-30 lg:flex lg:flex-col lg:w-64 lg:shrink-0 lg:h-screen lg:overflow-y-auto bg-white border-r border-slate-200">
+    <aside className="hide-scrollbar hidden lg:fixed lg:inset-y-0 lg:left-0 lg:z-30 lg:flex lg:flex-col lg:w-64 lg:shrink-0 lg:h-screen lg:overflow-y-auto bg-white border-r border-slate-200">
       <div className="px-6 py-6">
         <Logo size={36} />
       </div>

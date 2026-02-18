@@ -21,13 +21,18 @@ import {
   startCashierShift,
   updateCashierOrderStatus,
 } from '../services/cashier';
-import { getBusinessSettings, getBranchDisplayLabel } from '../services/settings';
+import { getBranchSettings, getBusinessSettings, getBranchDisplayLabel } from '../services/settings';
 import {
   isBrowserPosHardwareSupported,
   openDrawerInBrowserMode,
   printReceiptInBrowserMode,
   requestPrinterDevice,
 } from '../services/browserPosHardware';
+import {
+  setOfflineV2Enabled,
+  startOfflineSyncEngine,
+  triggerOfflineSyncNow,
+} from '../services/offlineSync';
 
 const DEFAULT_ADMIN_SWITCH_PIN = '0000';
 const ITEM_PAGE_SIZE = 24;
@@ -342,6 +347,9 @@ function Cashier() {
     () => String(localStorage.getItem('userRole') || 'cashier').toLowerCase()
   );
   const [branchId, setBranchId] = useState(() => resolveCashierBranchId());
+  const [offlineSyncEnabled, setOfflineSyncEnabledState] = useState(
+    () => String(localStorage.getItem('offlineV2Enabled') || '') === '1'
+  );
   const [sections, setSections] = useState([]);
   const [sectionsError, setSectionsError] = useState('');
   const [activeSectionId, setActiveSectionId] = useState('');
@@ -712,6 +720,7 @@ function Cashier() {
         promoCode,
         items: quoteItems,
         tax: 0,
+        branchId,
       });
 
       if (requestId !== quoteRequestRef.current) return;
@@ -724,14 +733,21 @@ function Cashier() {
       if (requestId !== quoteRequestRef.current) return;
 
       const message = extractApiError(error, 'Failed to calculate totals');
+      const promoValidationError =
+        Boolean(promoCode) && String(message || '').toLowerCase().startsWith('promo code');
       setQuote(null);
-      setQuoteError(message);
-      if (promoCode) setPromoError(message);
+      if (promoValidationError) {
+        setQuoteError('');
+        setPromoError(message);
+      } else {
+        setQuoteError(message);
+        if (promoCode) setPromoError(message);
+      }
     } finally {
       if (requestId !== quoteRequestRef.current) return;
       setQuoteLoading(false);
     }
-  }, []);
+  }, [branchId]);
 
   useEffect(() => {
     const storedRole = String(localStorage.getItem('userRole') || '').toLowerCase();
@@ -892,6 +908,16 @@ function Cashier() {
         localStorage.setItem('adminSwitchPin', effectivePin);
       })
       .catch(() => {});
+
+    getBranchSettings()
+      .then((data) => {
+        if (!alive) return;
+        const enabled = Boolean(data?.settings?.feature_flags?.offline_v2_enabled);
+        setOfflineSyncEnabledState(enabled);
+        setOfflineV2Enabled(enabled);
+      })
+      .catch(() => {});
+
     return () => {
       alive = false;
     };
@@ -904,6 +930,17 @@ function Cashier() {
   useEffect(() => {
     persistReceiptCache(receiptCache);
   }, [receiptCache, persistReceiptCache]);
+
+  useEffect(() => {
+    if (!offlineSyncEnabled) return undefined;
+    const stop = startOfflineSyncEngine(branchId, { intervalMs: 10000 });
+    triggerOfflineSyncNow(branchId);
+    return () => {
+      if (typeof stop === 'function') {
+        stop();
+      }
+    };
+  }, [branchId, offlineSyncEnabled]);
 
   useEffect(() => {
     const handleHiddenHardwareShortcut = (event) => {
@@ -1413,6 +1450,7 @@ function Cashier() {
 
     try {
       const response = await createCashierOrder({
+        branch_id: Number(branchId),
         source: 'pos',
         order_channel: 'pos',
         order_type: orderType,

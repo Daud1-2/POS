@@ -139,6 +139,15 @@ const normalizePhone = (value, fieldName = 'customer.phone') => {
   return phone.replace(/\s+/g, '');
 };
 
+const normalizeUuidOrNull = (value, fieldName) => {
+  if (value === undefined || value === null || value === '') return null;
+  const text = String(value).trim().toLowerCase();
+  if (!isUuid(text)) {
+    throw new ValidationError(`${fieldName} must be a valid UUID`);
+  }
+  return text;
+};
+
 const normalizeCustomerPayload = (payload = {}) => {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return null;
@@ -179,6 +188,22 @@ const generateOrderNumber = () => {
     .slice(0, 14);
   const rand = Math.floor(Math.random() * 100000).toString().padStart(5, '0');
   return `ORD-${stamp}-${rand}`;
+};
+
+const hasTableColumn = async (client, tableName, columnName) => {
+  const result = await client.query(
+    `
+    SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = $1
+        AND column_name = $2
+    ) AS "exists"
+    `,
+    [String(tableName), String(columnName)]
+  );
+  return Boolean(result.rows[0]?.exists);
 };
 
 const normalizeSource = (value) => {
@@ -363,6 +388,13 @@ const normalizeCreateOrderInput = (payload = {}, context = {}) => {
     outlet_id: outletId,
     external_order_id: payload.external_order_id || payload.externalOrderId || null,
     external_source: payload.external_source || payload.externalSource || null,
+    client_order_id: normalizeUuidOrNull(payload.client_order_id ?? payload.clientOrderId, 'client_order_id'),
+    source_device_id: normalizeUuidOrNull(payload.source_device_id ?? payload.sourceDeviceId, 'source_device_id'),
+    source_event_id: normalizeUuidOrNull(payload.source_event_id ?? payload.sourceEventId, 'source_event_id'),
+    client_created_at: toIsoTimestamp(
+      payload.client_created_at ?? payload.clientCreatedAt,
+      'client_created_at'
+    ),
     metadata: normalizeObject(payload.metadata),
     order_number: typeof payload.order_number === 'string' ? payload.order_number.trim() : '',
     items: normalizeItems(payload.items),
@@ -695,7 +727,9 @@ const resolveCustomerInTx = async ({ client, input }) => {
 
 const createOrder = async (payload = {}, context = {}) => {
   const input = normalizeCreateOrderInput(payload, context);
-  const shouldDeductInventory = shouldDeductInventoryForStatus(input.status);
+  const allowOversell = Boolean(context.allowOversell);
+  const skipInventoryDeduction = Boolean(context.skipInventoryDeduction);
+  const shouldDeductInventory = shouldDeductInventoryForStatus(input.status) && !skipInventoryDeduction;
   const client = await db.getClient();
 
   try {
@@ -705,7 +739,7 @@ const createOrder = async (payload = {}, context = {}) => {
     await assertBranchOrderAllowed({
       branchId: input.outlet_id,
       role: context.role || 'cashier',
-      nowUtc: new Date(),
+      nowUtc: context.nowUtc ? new Date(context.nowUtc) : new Date(),
       client,
     });
 
@@ -724,7 +758,7 @@ const createOrder = async (payload = {}, context = {}) => {
         throw new ValidationError(`product_id ${item.product_id} not found, inactive, or unavailable`);
       }
 
-      if (resolved.track_inventory && resolved.effective_stock < item.quantity) {
+      if (resolved.track_inventory && resolved.effective_stock < item.quantity && !allowOversell) {
         throw new ValidationError(`insufficient stock for product_id ${item.product_id}`);
       }
 
@@ -810,118 +844,251 @@ const createOrder = async (payload = {}, context = {}) => {
       inventory_restocked: false,
     };
 
-    const orderInsert = await client.query(
-      `
-      INSERT INTO orders (
-        order_number,
-        source,
-        order_channel,
-        order_type,
-        status,
-        scheduled_for,
-        subtotal,
-        tax,
-        discount,
-        promo_code_id,
-        promo_discount_amount,
-        bulk_discount_amount,
-        total,
-        payment_status,
-        payment_method,
-        customer_id,
-        customer_name_snapshot,
-        customer_phone_snapshot,
-        customer_email_snapshot,
-        outlet_id,
-        external_order_id,
-        external_source,
-        metadata,
-        created_at,
-        updated_at,
-        completed_at,
-        refunded_at
+    const supportsOrderSyncColumns = await hasTableColumn(client, 'orders', 'client_order_id');
+    const supportsOrderItemSourceEvent = await hasTableColumn(client, 'order_items', 'source_event_id');
+
+    const orderInsert = supportsOrderSyncColumns
+      ? await client.query(
+        `
+        INSERT INTO orders (
+          order_number,
+          source,
+          order_channel,
+          order_type,
+          status,
+          scheduled_for,
+          subtotal,
+          tax,
+          discount,
+          promo_code_id,
+          promo_discount_amount,
+          bulk_discount_amount,
+          total,
+          payment_status,
+          payment_method,
+          customer_id,
+          customer_name_snapshot,
+          customer_phone_snapshot,
+          customer_email_snapshot,
+          outlet_id,
+          client_order_id,
+          source_device_id,
+          source_event_id,
+          ingested_at,
+          client_created_at,
+          external_order_id,
+          external_source,
+          metadata,
+          created_at,
+          updated_at,
+          completed_at,
+          refunded_at
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+          $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+          $21, $22, $23, $24, $25, $26, $27, $28, now(), now(), $29, $30
+        )
+        RETURNING
+          id,
+          legacy_order_id,
+          order_number,
+          source,
+          order_channel,
+          status,
+          total,
+          outlet_id,
+          created_at,
+          client_order_id,
+          source_device_id,
+          source_event_id,
+          customer_id,
+          customer_name_snapshot,
+          customer_phone_snapshot,
+          customer_email_snapshot,
+          promo_code_id,
+          promo_discount_amount,
+          bulk_discount_amount
+        `,
+        [
+          orderNumber,
+          input.source,
+          input.order_channel,
+          input.order_type,
+          input.status,
+          input.scheduled_for,
+          subtotal,
+          taxAmount,
+          totalDiscount,
+          discounts.promo_code_id,
+          discounts.promo_discount_amount,
+          discounts.bulk_discount_amount,
+          total,
+          input.payment_status,
+          input.payment_method,
+          resolvedCustomer.id,
+          resolvedCustomer.snapshot_name,
+          resolvedCustomer.snapshot_phone,
+          resolvedCustomer.snapshot_email,
+          input.outlet_id,
+          input.client_order_id,
+          input.source_device_id,
+          input.source_event_id,
+          new Date().toISOString(),
+          input.client_created_at || null,
+          input.external_order_id,
+          input.external_source,
+          orderMetadata,
+          input.completed_at,
+          input.refunded_at,
+        ]
       )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-        $21, $22, $23, now(), now(), $24, $25
-      )
-      RETURNING
-        id,
-        legacy_order_id,
-        order_number,
-        source,
-        order_channel,
-        status,
-        total,
-        outlet_id,
-        created_at,
-        customer_id,
-        customer_name_snapshot,
-        customer_phone_snapshot,
-        customer_email_snapshot,
-        promo_code_id,
-        promo_discount_amount,
-        bulk_discount_amount
-      `,
-      [
-        orderNumber,
-        input.source,
-        input.order_channel,
-        input.order_type,
-        input.status,
-        input.scheduled_for,
-        subtotal,
-        taxAmount,
-        totalDiscount,
-        discounts.promo_code_id,
-        discounts.promo_discount_amount,
-        discounts.bulk_discount_amount,
-        total,
-        input.payment_status,
-        input.payment_method,
-        resolvedCustomer.id,
-        resolvedCustomer.snapshot_name,
-        resolvedCustomer.snapshot_phone,
-        resolvedCustomer.snapshot_email,
-        input.outlet_id,
-        input.external_order_id,
-        input.external_source,
-        orderMetadata,
-        input.completed_at,
-        input.refunded_at,
-      ]
-    );
+      : await client.query(
+        `
+        INSERT INTO orders (
+          order_number,
+          source,
+          order_channel,
+          order_type,
+          status,
+          scheduled_for,
+          subtotal,
+          tax,
+          discount,
+          promo_code_id,
+          promo_discount_amount,
+          bulk_discount_amount,
+          total,
+          payment_status,
+          payment_method,
+          customer_id,
+          customer_name_snapshot,
+          customer_phone_snapshot,
+          customer_email_snapshot,
+          outlet_id,
+          external_order_id,
+          external_source,
+          metadata,
+          created_at,
+          updated_at,
+          completed_at,
+          refunded_at
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+          $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+          $21, $22, $23, now(), now(), $24, $25
+        )
+        RETURNING
+          id,
+          legacy_order_id,
+          order_number,
+          source,
+          order_channel,
+          status,
+          total,
+          outlet_id,
+          created_at,
+          NULL::uuid AS client_order_id,
+          NULL::uuid AS source_device_id,
+          NULL::uuid AS source_event_id,
+          customer_id,
+          customer_name_snapshot,
+          customer_phone_snapshot,
+          customer_email_snapshot,
+          promo_code_id,
+          promo_discount_amount,
+          bulk_discount_amount
+        `,
+        [
+          orderNumber,
+          input.source,
+          input.order_channel,
+          input.order_type,
+          input.status,
+          input.scheduled_for,
+          subtotal,
+          taxAmount,
+          totalDiscount,
+          discounts.promo_code_id,
+          discounts.promo_discount_amount,
+          discounts.bulk_discount_amount,
+          total,
+          input.payment_status,
+          input.payment_method,
+          resolvedCustomer.id,
+          resolvedCustomer.snapshot_name,
+          resolvedCustomer.snapshot_phone,
+          resolvedCustomer.snapshot_email,
+          input.outlet_id,
+          input.external_order_id,
+          input.external_source,
+          orderMetadata,
+          input.completed_at,
+          input.refunded_at,
+        ]
+      );
 
     const order = orderInsert.rows[0];
 
     for (const item of resolvedItems) {
-      await client.query(
-        `
-        INSERT INTO order_items (
-          order_id,
-          legacy_order_id,
-          product_id,
-          product_name,
-          quantity,
-          unit_price,
-          total_price,
-          modifiers,
-          created_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
-        `,
-        [
-          order.id,
-          order.legacy_order_id,
-          item.product_id,
-          item.product_name,
-          item.quantity,
-          item.unit_price,
-          item.total_price,
-          item.modifiers,
-        ]
-      );
+      if (supportsOrderItemSourceEvent) {
+        await client.query(
+          `
+          INSERT INTO order_items (
+            order_id,
+            legacy_order_id,
+            product_id,
+            product_name,
+            quantity,
+            unit_price,
+            total_price,
+            modifiers,
+            source_event_id,
+            created_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+          `,
+          [
+            order.id,
+            order.legacy_order_id,
+            item.product_id,
+            item.product_name,
+            item.quantity,
+            item.unit_price,
+            item.total_price,
+            item.modifiers,
+            input.source_event_id,
+          ]
+        );
+      } else {
+        await client.query(
+          `
+          INSERT INTO order_items (
+            order_id,
+            legacy_order_id,
+            product_id,
+            product_name,
+            quantity,
+            unit_price,
+            total_price,
+            modifiers,
+            created_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+          `,
+          [
+            order.id,
+            order.legacy_order_id,
+            item.product_id,
+            item.product_name,
+            item.quantity,
+            item.unit_price,
+            item.total_price,
+            item.modifiers,
+          ]
+        );
+      }
     }
 
     if (shouldDeductInventory) {
@@ -968,6 +1135,9 @@ const createOrder = async (payload = {}, context = {}) => {
       total: roundMoney(order.total),
       branch_id: Number(order.outlet_id),
       created_at: order.created_at,
+      client_order_id: order.client_order_id || null,
+      source_device_id: order.source_device_id || null,
+      source_event_id: order.source_event_id || null,
       customer_id: order.customer_id ? Number(order.customer_id) : null,
       customer_name_snapshot: order.customer_name_snapshot,
       customer_phone_snapshot: order.customer_phone_snapshot,

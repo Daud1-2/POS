@@ -117,6 +117,25 @@ const normalizeSource = (value) => {
 
 const isUuid = (value) => typeof value === 'string' && UUID_RE.test(value);
 
+const toCanonicalPromoApplicable = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return '';
+  if (['app', 'pos', 'kiosk', 'phone'].includes(normalized)) return 'app';
+  if (['web', 'website', 'online'].includes(normalized)) return 'web';
+  if (['both', 'all', 'any'].includes(normalized)) return 'both';
+  return normalized;
+};
+
+const toCanonicalDiscountType = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return '';
+  if (['percentage', 'percent', 'pct', '%'].includes(normalized)) return 'percentage';
+  if (['fixed', 'flat', 'amount', 'fixed_amount', 'fixed-amount'].includes(normalized)) return 'fixed';
+  return normalized;
+};
+
+const toCanonicalStatus = (value) => String(value || '').trim().toLowerCase();
+
 const sourcePromoChannel = (source) => (source === 'website' ? 'web' : 'app');
 
 const assertTimeWindow = (startTime, endTime) => {
@@ -158,8 +177,9 @@ const mapPromoEffectiveStatus = (promo, now = new Date()) => {
   const end = promo.end_time ? new Date(promo.end_time) : null;
   const usageLimit = promo.usage_limit === null || promo.usage_limit === undefined ? null : Number(promo.usage_limit);
   const usedCount = Number(promo.used_count || 0);
+  const status = toCanonicalStatus(promo.status);
 
-  if (promo.status !== 'active') return 'inactive';
+  if (status !== 'active') return 'inactive';
   if (start && now < start) return 'inactive';
   if (end && now > end) return 'expired';
   if (usageLimit !== null && usedCount >= usageLimit) return 'expired';
@@ -169,8 +189,9 @@ const mapPromoEffectiveStatus = (promo, now = new Date()) => {
 const mapBulkEffectiveStatus = (rule, now = new Date()) => {
   const start = rule.start_time ? new Date(rule.start_time) : null;
   const end = rule.end_time ? new Date(rule.end_time) : null;
+  const status = toCanonicalStatus(rule.status);
 
-  if (rule.status !== 'active') return 'inactive';
+  if (status !== 'active') return 'inactive';
   if (start && now < start) return 'inactive';
   if (end && now > end) return 'expired';
   return 'active';
@@ -187,7 +208,7 @@ const normalizePromoPayload = (payload = {}, { partial = false } = {}) => {
   }
   if (!partial || payload.applicable_on !== undefined) {
     const applicableOnRaw = normalizeText(payload.applicable_on, 'applicable_on', { required: !partial, max: 10 });
-    const applicableOn = applicableOnRaw ? applicableOnRaw.toLowerCase() : null;
+    const applicableOn = applicableOnRaw ? toCanonicalPromoApplicable(applicableOnRaw) : null;
     if (applicableOn && !PROMO_APPLICABLE.has(applicableOn)) {
       throw new DiscountValidationError('applicable_on must be app, web, or both');
     }
@@ -195,7 +216,7 @@ const normalizePromoPayload = (payload = {}, { partial = false } = {}) => {
   }
   if (!partial || payload.discount_type !== undefined) {
     const typeRaw = normalizeText(payload.discount_type, 'discount_type', { required: !partial, max: 20 });
-    const type = typeRaw ? typeRaw.toLowerCase() : null;
+    const type = typeRaw ? toCanonicalDiscountType(typeRaw) : null;
     if (type && !DISCOUNT_TYPES.has(type)) {
       throw new DiscountValidationError('discount_type must be percentage or fixed');
     }
@@ -224,7 +245,7 @@ const normalizePromoPayload = (payload = {}, { partial = false } = {}) => {
   }
   if (!partial || payload.status !== undefined) {
     const statusRaw = normalizeText(payload.status, 'status', { required: !partial, max: 10 });
-    const status = statusRaw ? statusRaw.toLowerCase() : null;
+    const status = statusRaw ? toCanonicalStatus(statusRaw) : null;
     if (status && !PROMO_STATUSES.has(status)) {
       throw new DiscountValidationError('status must be active or inactive');
     }
@@ -257,7 +278,7 @@ const normalizeBulkPayload = (payload = {}, { partial = false } = {}) => {
   }
   if (!partial || payload.discount_type !== undefined) {
     const typeRaw = normalizeText(payload.discount_type, 'discount_type', { required: !partial, max: 20 });
-    const type = typeRaw ? typeRaw.toLowerCase() : null;
+    const type = typeRaw ? toCanonicalDiscountType(typeRaw) : null;
     if (type && !DISCOUNT_TYPES.has(type)) {
       throw new DiscountValidationError('discount_type must be percentage or fixed');
     }
@@ -306,7 +327,7 @@ const normalizeBulkPayload = (payload = {}, { partial = false } = {}) => {
   }
   if (!partial || payload.status !== undefined) {
     const statusRaw = normalizeText(payload.status, 'status', { required: !partial, max: 10 });
-    const status = statusRaw ? statusRaw.toLowerCase() : null;
+    const status = statusRaw ? toCanonicalStatus(statusRaw) : null;
     if (status && !BULK_STATUSES.has(status)) {
       throw new DiscountValidationError('status must be active or inactive');
     }
@@ -1011,8 +1032,9 @@ const computeBulkCandidates = ({ rules, items, subtotal, outletId, roundingRule 
           );
     if (baseAmount <= 0) continue;
 
+    const ruleDiscountType = toCanonicalDiscountType(rule.discount_type);
     const rawDiscount =
-      rule.discount_type === 'percentage'
+      ruleDiscountType === 'percentage'
         ? (baseAmount * Number(rule.discount_value)) / 100
         : Number(rule.discount_value);
     const computedDiscount = Math.min(baseAmount, applyRounding(rawDiscount, roundingRule));
@@ -1083,7 +1105,7 @@ const evaluateBulkDiscount = async ({
       uuid: winner.rule.uuid,
       name: winner.rule.name,
       applies_to: winner.rule.applies_to,
-      discount_type: winner.rule.discount_type,
+      discount_type: toCanonicalDiscountType(winner.rule.discount_type),
       discount_value: Number(winner.rule.discount_value),
       priority: Number(winner.rule.priority),
       matched_base_amount: winner.base_amount,
@@ -1144,7 +1166,11 @@ const validatePromoForAmount = async ({
   }
 
   const expectedChannel = sourcePromoChannel(normalizedSource);
-  if (promo.applicable_on !== 'both' && promo.applicable_on !== expectedChannel) {
+  const promoApplicableOn = toCanonicalPromoApplicable(promo.applicable_on);
+  if (!PROMO_APPLICABLE.has(promoApplicableOn)) {
+    throw new DiscountValidationError('promo code configuration is invalid', 409);
+  }
+  if (promoApplicableOn !== 'both' && promoApplicableOn !== expectedChannel) {
     throw new DiscountValidationError('promo code is not valid for this order source');
   }
 
@@ -1174,8 +1200,9 @@ const validatePromoForAmount = async ({
     }
   }
 
+  const promoDiscountType = toCanonicalDiscountType(promo.discount_type);
   let promoDiscount =
-    promo.discount_type === 'percentage'
+    promoDiscountType === 'percentage'
       ? (amountBeforePromo * Number(promo.discount_value)) / 100
       : Number(promo.discount_value);
 
@@ -1193,8 +1220,8 @@ const validatePromoForAmount = async ({
       uuid: promo.uuid,
       code: promo.code,
       name: promo.name,
-      applicable_on: promo.applicable_on,
-      discount_type: promo.discount_type,
+      applicable_on: promoApplicableOn,
+      discount_type: promoDiscountType,
       discount_value: Number(promo.discount_value),
       discount_amount: promoDiscount,
     },

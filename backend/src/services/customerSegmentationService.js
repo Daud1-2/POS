@@ -10,6 +10,7 @@ const SEGMENTS = new Set([
 ]);
 const SEGMENT_GROUPS = new Set(['risk', 'loyal']);
 const RISK_AFTER_DAYS = 30;
+const CUSTOMER_CHANNELS = "'online','whatsapp','delivery_platform'";
 
 const SORT_FIELDS = {
   customer_name: 's.customer_name',
@@ -55,6 +56,13 @@ WITH scoped_orders AS (
   WHERE o.outlet_id = $1
     AND o.deleted_at IS NULL
     AND o.status = 'completed'
+    AND (
+      o.order_channel IN (${CUSTOMER_CHANNELS})
+      OR (
+        (o.order_channel IS NULL OR o.order_channel = '')
+        AND LOWER(COALESCE(o.source, '')) IN ('website', 'app')
+      )
+    )
 ),
 aggregated AS (
   SELECT

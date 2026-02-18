@@ -1,4 +1,9 @@
 import api from './api';
+import {
+  commitSaleLocalFirst,
+  isOfflineV2Enabled,
+  triggerOfflineSyncNow,
+} from './offlineSync';
 
 const LEGACY_ALLOWED_STATUSES = new Set([
   'open',
@@ -65,6 +70,14 @@ const resolveCashierBranchId = () => {
   const fallback = fallbackIds[0] || 1;
   localStorage.setItem('branchId', String(fallback));
   return fallback;
+};
+
+const resolveBranchIdInput = (value) => {
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return resolveCashierBranchId();
 };
 
 const withBranch = (params = {}, branchId = resolveCashierBranchId()) => ({
@@ -172,8 +185,14 @@ const getCashierItems = async ({ page = 1, pageSize = 24, search = '', sectionId
   };
 };
 
-const getCashierQuote = async ({ items = [], promoCode = '', source = 'pos', tax = 0 } = {}) => {
-  const branchId = resolveCashierBranchId();
+const getCashierQuote = async ({
+  items = [],
+  promoCode = '',
+  source = 'pos',
+  tax = 0,
+  branchId: branchIdInput = null,
+} = {}) => {
+  const branchId = resolveBranchIdInput(branchIdInput);
   const response = await api.post(
     '/discounts/quote',
     {
@@ -241,13 +260,32 @@ const createOrderViaSalesCompatibility = async ({ payload, branchId }) => {
 };
 
 const createCashierOrder = async (payload) => {
-  const branchId = resolveCashierBranchId();
+  const branchId = resolveBranchIdInput(payload?.branch_id ?? payload?.branchId);
   const orderChannel = normalizeOrderChannel(payload?.order_channel || SOURCE_TO_CHANNEL[payload?.source] || 'pos');
   const body = {
     ...(payload || {}),
     branch_id: branchId,
     order_channel: orderChannel,
   };
+
+  if (isOfflineV2Enabled()) {
+    try {
+      const local = await commitSaleLocalFirst({
+        branchId,
+        payload: body,
+      });
+      triggerOfflineSyncNow(branchId);
+      return {
+        branchId,
+        data: toCanonicalOrderRow(local?.data || {}, orderChannel),
+      };
+    } catch (offlineErr) {
+      const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+      if (offline) {
+        throw offlineErr;
+      }
+    }
+  }
 
   try {
     const response = await api.post('/orders', body, { params: withBranch({}, branchId) });
